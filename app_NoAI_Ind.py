@@ -787,27 +787,46 @@ HTML_TEMPLATE = r'''
             box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
         }
 
-        .modal-content h3 {
+        .modal-header {
+            font-size: 22px;
+            font-weight: 600;
             color: #dc2626;
             margin-bottom: 20px;
-            font-size: 22px;
         }
 
-        .modal-content ul {
-            list-style-position: inside;
-            margin-bottom: 20px;
-            line-height: 1.8;
-            color: #444;
+        .modal-body {
+            margin-bottom: 25px;
+        }
+
+        .hint-item {
+            background: #fef2f2;
+            border-left: 4px solid #dc2626;
+            padding: 12px;
+            margin-bottom: 12px;
+            border-radius: 4px;
+        }
+
+        .hint-item strong {
+            color: #991b1b;
+        }
+
+        .hint-text {
+            color: #7f1d1d;
+            margin-top: 5px;
+            line-height: 1.5;
+        }
+
+        .modal-footer {
+            text-align: right;
         }
 
         .modal-btn {
-            width: 100%;
-            padding: 12px;
+            padding: 10px 20px;
             background: #667eea;
             color: white;
             border: none;
             border-radius: 8px;
-            font-size: 16px;
+            font-size: 14px;
             font-weight: 600;
             cursor: pointer;
         }
@@ -911,9 +930,11 @@ HTML_TEMPLATE = r'''
     <!-- Modal for hints -->
     <div class="modal" id="hintModal">
         <div class="modal-content">
-            <h3>Please review the following:</h3>
-            <ul id="hintsList"></ul>
-            <button class="modal-btn" onclick="closeHintModal()">Review Answers</button>
+            <div class="modal-header">Please Review Your Answers</div>
+            <div class="modal-body" id="hintContent"></div>
+            <div class="modal-footer">
+                <button class="modal-btn" onclick="closeHintModal()">Review Answers</button>
+            </div>
         </div>
     </div>
 
@@ -1258,14 +1279,18 @@ HTML_TEMPLATE = r'''
         }
 
         function showHints(incorrectQuestions) {
-            const hintsList = document.getElementById('hintsList');
-            hintsList.innerHTML = '';
+            const hintContent = document.getElementById('hintContent');
+            hintContent.innerHTML = '';
 
-            incorrectQuestions.forEach(q => {
-                const li = document.createElement('li');
-                li.textContent = hints[q];
-                li.style.marginBottom = '10px';
-                hintsList.appendChild(li);
+            incorrectQuestions.forEach((q, index) => {
+                const questionNum = q.replace('q', '');
+                const hintDiv = document.createElement('div');
+                hintDiv.className = 'hint-item';
+                hintDiv.innerHTML = `
+                    <strong>Question ${questionNum}:</strong>
+                    <div class="hint-text">${hints[q]}</div>
+                `;
+                hintContent.appendChild(hintDiv);
             });
 
             document.getElementById('hintModal').classList.add('active');
@@ -1276,26 +1301,35 @@ HTML_TEMPLATE = r'''
         }
 
         function goToMainSession() {
-            // Hide wait screen and show main container
-            document.getElementById('waitScreen1').classList.remove('active');
-            document.getElementById('mainContainer').classList.add('active');
+            // Start the session and timer NOW (not before)
+            fetch(API_BASE + '/api/start_session', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({team_id: teamId, participant_id: participantId})
+            })
+            .then(response => response.json())
+            .then(data => {
+                // Hide wait screen and show main container
+                document.getElementById('waitScreen1').classList.remove('active');
+                document.getElementById('mainContainer').classList.add('active');
 
-            // NOW start the timer and polling
-            loadIdeas();
-            loadFinalIdea();
-
-            startTimer();
-
-            // Send heartbeat every 3 seconds
-            sendHeartbeat();
-            setInterval(() => {
-                sendHeartbeat();
-            }, 3000);
-
-            pollInterval = setInterval(() => {
+                // NOW start the timer and polling
                 loadIdeas();
                 loadFinalIdea();
-            }, 2000);
+
+                startTimer();
+
+                // Send heartbeat every 3 seconds
+                sendHeartbeat();
+                setInterval(() => {
+                    sendHeartbeat();
+                }, 3000);
+
+                pollInterval = setInterval(() => {
+                    loadIdeas();
+                    loadFinalIdea();
+                }, 2000);
+            });
         }
 
         // Typing metrics tracking
@@ -1474,17 +1508,9 @@ HTML_TEMPLATE = r'''
             teamId = participantInput;
             participantId = participantInput;
 
-            fetch(API_BASE + '/api/start_session', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({team_id: teamId, participant_id: participantId})
-            })
-            .then(response => response.json())
-            .then(data => {
-                // Go to comprehension screen instead of main session
-                document.getElementById('loginScreen').style.display = 'none';
-                document.getElementById('comprehensionScreen').classList.add('active');
-            });
+            // Go to comprehension screen (don't start session/timer yet)
+            document.getElementById('loginScreen').style.display = 'none';
+            document.getElementById('comprehensionScreen').classList.add('active');
         }
 
         function loadIdeas() {
