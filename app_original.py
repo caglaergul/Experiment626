@@ -1517,7 +1517,7 @@ HTML_TEMPLATE = r'''
             q1: 'False',
             q2: 'False',
             q3: 'True',
-            q4: 'b'
+            q4: 'a'
         };
 
         const hints = {
