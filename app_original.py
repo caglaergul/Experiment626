@@ -1076,6 +1076,15 @@ HTML_TEMPLATE = r'''
                 <input type="text" id="teamId" placeholder="Enter your team ID">
             </div>
 
+            <div class="input-group">
+                <label for="participantId">Participant ID</label>
+                <input type="text" id="participantId" placeholder="Enter your participant ID">
+            </div>
+
+            <button class="btn" onclick="startStudy()">Start Session</button>
+        </div>
+    </div>
+
     <!-- Comprehension Questions Screen -->
     <div class="comprehension-screen" id="comprehensionScreen">
         <div class="comprehension-box">
@@ -1165,16 +1174,6 @@ HTML_TEMPLATE = r'''
         <div class="wait-box">
             <p>Please wait...</p>
             <button class="continue-btn" onclick="goToMainSession()">Continue</button>
-        </div>
-    </div>
-
-
-            <div class="input-group">
-                <label for="participantId">Participant ID</label>
-                <input type="text" id="participantId" placeholder="Enter your participant ID">
-            </div>
-
-            <button class="btn" onclick="startStudy()">Start Session</button>
         </div>
     </div>
 
