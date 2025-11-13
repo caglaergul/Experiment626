@@ -911,6 +911,158 @@ HTML_TEMPLATE = r'''
         .survey-single-column {
             margin-bottom: 30px;
         }
+
+        /* Comprehension Screen */
+        .comprehension-screen {
+            display: none;
+            min-height: 100vh;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            justify-content: center;
+            align-items: center;
+            padding: 40px;
+        }
+
+        .comprehension-screen.active {
+            display: flex;
+        }
+
+        .comprehension-box {
+            background: white;
+            border-radius: 16px;
+            padding: 50px;
+            max-width: 1000px;
+            width: 100%;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-height: 90vh;
+            overflow-y: auto;
+            cursor: default;
+        }
+
+        .comprehension-box h2 {
+            font-size: 24px;
+            color: #333;
+            margin-bottom: 30px;
+        }
+
+        .comprehension-question {
+            margin-bottom: 25px;
+            padding: 15px;
+            background: #f9fafb;
+            border-radius: 8px;
+        }
+
+        .comprehension-question label {
+            font-weight: 500;
+            margin-bottom: 12px;
+            display: block;
+            color: #444;
+            font-size: 14px;
+        }
+
+        .radio-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin-top: 10px;
+        }
+
+        .radio-option {
+            display: flex;
+            align-items: center;
+            padding: 8px;
+            border-radius: 4px;
+            transition: background 0.2s;
+        }
+
+        .radio-option:hover {
+            background: #f0f0f0;
+        }
+
+        .radio-option input[type="radio"] {
+            margin-right: 10px;
+            cursor: pointer;
+        }
+
+        .radio-option label {
+            margin: 0;
+            cursor: pointer;
+            font-weight: normal;
+        }
+
+        /* Modal for Hints */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            justify-content: center;
+            align-items: center;
+        }
+
+        .modal.active {
+            display: flex;
+        }
+
+        .modal-content {
+            background: white;
+            border-radius: 12px;
+            padding: 40px;
+            max-width: 600px;
+            width: 90%;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+        }
+
+        .modal-header {
+            font-size: 22px;
+            font-weight: 600;
+            color: #dc2626;
+            margin-bottom: 20px;
+        }
+
+        .modal-body {
+            margin-bottom: 25px;
+        }
+
+        .hint-item {
+            background: #fef2f2;
+            border-left: 4px solid #dc2626;
+            padding: 12px;
+            margin-bottom: 12px;
+            border-radius: 4px;
+        }
+
+        .hint-item strong {
+            color: #991b1b;
+        }
+
+        .hint-text {
+            color: #7f1d1d;
+            margin-top: 5px;
+            line-height: 1.5;
+        }
+
+        .modal-footer {
+            text-align: right;
+        }
+
+        .modal-btn {
+            padding: 10px 20px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+
+        .modal-btn:hover {
+            background: #5568d3;
+        }
     </style>
 </head>
 <body>
@@ -933,6 +1085,98 @@ HTML_TEMPLATE = r'''
             </div>
 
             <button class="btn" onclick="startStudy()">Start Session</button>
+        </div>
+    </div>
+
+    <!-- Comprehension Questions Screen -->
+    <div class="comprehension-screen" id="comprehensionScreen">
+        <div class="comprehension-box">
+            <h2>Please answer the following questions.</h2>
+
+            <div class="comprehension-question">
+                <label>1. The ideas you come up with need to be feasible and fully functional.</label>
+                <div class="radio-group">
+                    <div class="radio-option">
+                        <input type="radio" id="q1_true" name="q1" value="True">
+                        <label for="q1_true">True</label>
+                    </div>
+                    <div class="radio-option">
+                        <input type="radio" id="q1_false" name="q1" value="False">
+                        <label for="q1_false">False</label>
+                    </div>
+                </div>
+            </div>
+
+            <div class="comprehension-question">
+                <label>2. You will be evaluated based on the number of ideas you generate.</label>
+                <div class="radio-group">
+                    <div class="radio-option">
+                        <input type="radio" id="q2_true" name="q2" value="True">
+                        <label for="q2_true">True</label>
+                    </div>
+                    <div class="radio-option">
+                        <input type="radio" id="q2_false" name="q2" value="False">
+                        <label for="q2_false">False</label>
+                    </div>
+                </div>
+            </div>
+
+            <div class="comprehension-question">
+                <label>3. You will be evaluated based on the final idea you submit.</label>
+                <div class="radio-group">
+                    <div class="radio-option">
+                        <input type="radio" id="q3_true" name="q3" value="True">
+                        <label for="q3_true">True</label>
+                    </div>
+                    <div class="radio-option">
+                        <input type="radio" id="q3_false" name="q3" value="False">
+                        <label for="q3_false">False</label>
+                    </div>
+                </div>
+            </div>
+
+            <div class="comprehension-question">
+                <label>4. If you receive 15 points for Quality, and 10 points for Originality of your idea, your final points will be calculated as:</label>
+                <div class="radio-group">
+                    <div class="radio-option">
+                        <input type="radio" id="q4_a" name="q4" value="a">
+                        <label for="q4_a">a) 60% × 15 + 40% × 10 = 13</label>
+                    </div>
+                    <div class="radio-option">
+                        <input type="radio" id="q4_b" name="q4" value="b">
+                        <label for="q4_b">b) 40% × 15 + 60% × 10 = 12</label>
+                    </div>
+                    <div class="radio-option">
+                        <input type="radio" id="q4_c" name="q4" value="c">
+                        <label for="q4_c">c) 50% × 15 + 50% × 10 = 12.5</label>
+                    </div>
+                    <div class="radio-option">
+                        <input type="radio" id="q4_d" name="q4" value="d">
+                        <label for="q4_d">d) 15 + 10 = 25</label>
+                    </div>
+                </div>
+            </div>
+
+            <button class="continue-btn" onclick="checkComprehension()">Continue</button>
+        </div>
+    </div>
+
+    <!-- Modal for hints -->
+    <div class="modal" id="hintModal">
+        <div class="modal-content">
+            <div class="modal-header">Please Review Your Answers</div>
+            <div class="modal-body" id="hintContent"></div>
+            <div class="modal-footer">
+                <button class="modal-btn" onclick="closeHintModal()">Review Answers</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Wait Screen 1 (After Comprehension) -->
+    <div class="wait-screen" id="waitScreen1">
+        <div class="wait-box">
+            <p>Please wait...</p>
+            <button class="continue-btn" onclick="goToMainSession()">Continue</button>
         </div>
     </div>
 
@@ -1251,6 +1495,118 @@ HTML_TEMPLATE = r'''
         let onlineParticipants = {};
         const API_BASE = window.location.origin;
 
+        // Comprehension questions correct answers
+        const correctAnswers = {
+            q1: 'False',
+            q2: 'False',
+            q3: 'True',
+            q4: 'a'
+        };
+
+        const hints = {
+            q1: 'The ideas are conceptual only—they do not need to exist yet or be fully feasible.',
+            q2: 'Generating several ideas might be helpful for brainstorming, but you will be evaluated based on the final idea you submit.',
+            q3: 'Evaluations will be made based on the final idea you submit to the system.',
+            q4: 'The final score is calculated as 40% × Originality Score + 60% × Quality Score.'
+        };
+
+        function checkComprehension() {
+            const answers = {
+                q1: document.querySelector('input[name="q1"]:checked')?.value,
+                q2: document.querySelector('input[name="q2"]:checked')?.value,
+                q3: document.querySelector('input[name="q3"]:checked')?.value,
+                q4: document.querySelector('input[name="q4"]:checked')?.value
+            };
+
+            // Check if all questions are answered
+            if (!answers.q1 || !answers.q2 || !answers.q3 || !answers.q4) {
+                alert('Please answer all questions before continuing.');
+                return;
+            }
+
+            // Check correctness
+            const incorrectQuestions = [];
+            for (let q in correctAnswers) {
+                if (answers[q] !== correctAnswers[q]) {
+                    incorrectQuestions.push(q);
+                }
+            }
+
+            if (incorrectQuestions.length > 0) {
+                // Show hints modal
+                showHints(incorrectQuestions);
+            } else {
+                // All correct, proceed to wait screen
+                document.getElementById('comprehensionScreen').classList.remove('active');
+                document.getElementById('waitScreen1').classList.add('active');
+            }
+        }
+
+        function showHints(incorrectQuestions) {
+            const hintContent = document.getElementById('hintContent');
+            hintContent.innerHTML = '';
+
+            incorrectQuestions.forEach((q, index) => {
+                const questionNum = q.replace('q', '');
+                const hintDiv = document.createElement('div');
+                hintDiv.className = 'hint-item';
+                hintDiv.innerHTML = `
+                    <strong>Question ${questionNum}:</strong>
+                    <div class="hint-text">${hints[q]}</div>
+                `;
+                hintContent.appendChild(hintDiv);
+            });
+
+            document.getElementById('hintModal').classList.add('active');
+        }
+
+        function closeHintModal() {
+            document.getElementById('hintModal').classList.remove('active');
+        }
+
+        function goToMainSession() {
+            // Start the session and timer NOW when participant clicks Continue
+            // This ensures timer synchronization - whichever team member clicks first starts the timer for both
+            fetch(API_BASE + '/api/start_session', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({team_id: teamId, participant_id: participantId})
+            })
+            .then(response => response.json())
+            .then(data => {
+                // Hide wait screen and show main container
+                document.getElementById('waitScreen1').classList.remove('active');
+                document.getElementById('mainContainer').classList.add('active');
+
+                // Disable the other participant's checkbox
+                const otherParticipant = participantId === '1' ? '2' : '1';
+                const otherCheckbox = document.getElementById(`approval${otherParticipant}`);
+                const otherContainer = document.getElementById(`approval${otherParticipant}Container`);
+
+                otherCheckbox.disabled = true;
+                otherContainer.classList.add('disabled');
+
+                loadMessages();
+                loadIdeas();
+                loadFinalIdea();
+                loadApprovals();
+
+                // Start timer and online status updates
+                startTimer();
+                updateOnlineStatus();
+                sendHeartbeat();
+
+                pollInterval = setInterval(() => {
+                    loadMessages();
+                    loadIdeas();
+                    loadFinalIdea();
+                    loadApprovals();
+                    updateOnlineStatus();
+                    sendHeartbeat();
+                }, 2000);
+            });
+        }
+
         function loadTimer() {
             fetch(API_BASE + `/api/get_timer/${teamId}`)
                 .then(response => response.json())
@@ -1364,44 +1720,11 @@ HTML_TEMPLATE = r'''
 
             teamId = teamInput;
             participantId = participantInput;
-            
-            fetch(API_BASE + '/api/start_session', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({team_id: teamId, participant_id: participantId})
-            })
-            .then(response => response.json())
-            .then(data => {
-                // Disable the other participant's checkbox
-                const otherParticipant = participantId === '1' ? '2' : '1';
-                const otherCheckbox = document.getElementById(`approval${otherParticipant}`);
-                const otherContainer = document.getElementById(`approval${otherParticipant}Container`);
-                
-                otherCheckbox.disabled = true;
-                otherContainer.classList.add('disabled');
-                
-                loadMessages();
-                loadIdeas();
-                loadFinalIdea();
-                loadApprovals();
-                
-                // Start timer and online status updates
-                startTimer();
-                updateOnlineStatus();
-                sendHeartbeat();
-                
-                pollInterval = setInterval(() => {
-                    loadMessages();
-                    loadIdeas();
-                    loadFinalIdea();
-                    loadApprovals();
-                    updateOnlineStatus();
-                    sendHeartbeat();
-                }, 2000);
-            });
 
+            // Go to comprehension screen (don't start session/timer yet)
+            // Timer will only start when participant clicks Continue on wait screen
             document.getElementById('loginScreen').style.display = 'none';
-            document.getElementById('mainContainer').classList.add('active');
+            document.getElementById('comprehensionScreen').classList.add('active');
             document.getElementById('teamInfo').textContent = `Team: ${teamId} | You: ${participantId}`;
         }
 
