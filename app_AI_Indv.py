@@ -760,7 +760,7 @@ HTML_TEMPLATE = r'''
             box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
             max-height: 90vh;
             overflow-y: auto;
-            cursor: pointer;
+            cursor: default;
         }
 
         .instructions-box h1 {
@@ -793,6 +793,162 @@ HTML_TEMPLATE = r'''
         }
 
         .go-back-btn:hover {
+            background: #5568d3;
+        }
+
+        /* Comprehension Screen */
+        .comprehension-screen {
+            display: none;
+            min-height: 100vh;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            justify-content: center;
+            align-items: center;
+            padding: 40px;
+        }
+
+        .comprehension-screen.active {
+            display: flex;
+        }
+
+        .comprehension-box {
+            background: white;
+            border-radius: 16px;
+            padding: 50px;
+            max-width: 1000px;
+            width: 100%;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-height: 90vh;
+            overflow-y: auto;
+            cursor: default;
+        }
+
+        .comprehension-box h2 {
+            font-size: 24px;
+            color: #333;
+            margin-bottom: 30px;
+        }
+
+        .comprehension-question {
+            margin-bottom: 25px;
+            padding: 15px;
+            background: #f9fafb;
+            border-radius: 8px;
+        }
+
+        .comprehension-question label {
+            font-weight: 500;
+            margin-bottom: 12px;
+            display: block;
+            color: #444;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+
+        .radio-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin-top: 10px;
+        }
+
+        .radio-option {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .radio-option:hover {
+            background: #e5e7eb;
+        }
+
+        .radio-option input[type="radio"] {
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
+        }
+
+        .radio-option label {
+            cursor: pointer;
+            margin: 0 !important;
+            font-weight: normal !important;
+        }
+
+        /* Modal for hints */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+            justify-content: center;
+            align-items: center;
+        }
+
+        .modal.active {
+            display: flex;
+        }
+
+        .modal-content {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            max-width: 600px;
+            width: 90%;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+        }
+
+        .modal-header {
+            font-size: 22px;
+            font-weight: 600;
+            color: #dc2626;
+            margin-bottom: 20px;
+        }
+
+        .modal-body {
+            margin-bottom: 25px;
+        }
+
+        .hint-item {
+            background: #fef2f2;
+            border-left: 4px solid #dc2626;
+            padding: 12px;
+            margin-bottom: 12px;
+            border-radius: 4px;
+        }
+
+        .hint-item strong {
+            color: #991b1b;
+        }
+
+        .hint-text {
+            color: #7f1d1d;
+            margin-top: 5px;
+            line-height: 1.5;
+        }
+
+        .modal-footer {
+            text-align: right;
+        }
+
+        .modal-btn {
+            padding: 10px 20px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+
+        .modal-btn:hover {
             background: #5568d3;
         }
 
@@ -962,6 +1118,98 @@ HTML_TEMPLATE = r'''
             </div>
 
             <button class="btn" onclick="startStudy()">Start Session</button>
+        </div>
+    </div>
+
+    <!-- Comprehension Questions Screen -->
+    <div class="comprehension-screen" id="comprehensionScreen">
+        <div class="comprehension-box">
+            <h2>Please answer the following questions.</h2>
+
+            <div class="comprehension-question">
+                <label>1. The ideas you come up with need to be feasible and fully functional.</label>
+                <div class="radio-group">
+                    <div class="radio-option">
+                        <input type="radio" id="q1_true" name="q1" value="True">
+                        <label for="q1_true">True</label>
+                    </div>
+                    <div class="radio-option">
+                        <input type="radio" id="q1_false" name="q1" value="False">
+                        <label for="q1_false">False</label>
+                    </div>
+                </div>
+            </div>
+
+            <div class="comprehension-question">
+                <label>2. You will be evaluated based on the number of ideas you generate.</label>
+                <div class="radio-group">
+                    <div class="radio-option">
+                        <input type="radio" id="q2_true" name="q2" value="True">
+                        <label for="q2_true">True</label>
+                    </div>
+                    <div class="radio-option">
+                        <input type="radio" id="q2_false" name="q2" value="False">
+                        <label for="q2_false">False</label>
+                    </div>
+                </div>
+            </div>
+
+            <div class="comprehension-question">
+                <label>3. You will be evaluated based on the final idea you submit.</label>
+                <div class="radio-group">
+                    <div class="radio-option">
+                        <input type="radio" id="q3_true" name="q3" value="True">
+                        <label for="q3_true">True</label>
+                    </div>
+                    <div class="radio-option">
+                        <input type="radio" id="q3_false" name="q3" value="False">
+                        <label for="q3_false">False</label>
+                    </div>
+                </div>
+            </div>
+
+            <div class="comprehension-question">
+                <label>4. If you receive 15 points for Quality, and 10 points for Originality of your idea, your final points will be calculated as:</label>
+                <div class="radio-group">
+                    <div class="radio-option">
+                        <input type="radio" id="q4_a" name="q4" value="a">
+                        <label for="q4_a">a) 60% × 15 + 40% × 10 = 13</label>
+                    </div>
+                    <div class="radio-option">
+                        <input type="radio" id="q4_b" name="q4" value="b">
+                        <label for="q4_b">b) 40% × 15 + 60% × 10 = 12</label>
+                    </div>
+                    <div class="radio-option">
+                        <input type="radio" id="q4_c" name="q4" value="c">
+                        <label for="q4_c">c) 50% × 15 + 50% × 10 = 12.5</label>
+                    </div>
+                    <div class="radio-option">
+                        <input type="radio" id="q4_d" name="q4" value="d">
+                        <label for="q4_d">d) 15 + 10 = 25</label>
+                    </div>
+                </div>
+            </div>
+
+            <button class="continue-btn" onclick="checkComprehension()">Continue</button>
+        </div>
+    </div>
+
+    <!-- Modal for hints -->
+    <div class="modal" id="hintModal">
+        <div class="modal-content">
+            <div class="modal-header">Please Review Your Answers</div>
+            <div class="modal-body" id="hintContent"></div>
+            <div class="modal-footer">
+                <button class="modal-btn" onclick="closeHintModal()">Review Answers</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Wait Screen 1 (After Comprehension) -->
+    <div class="wait-screen" id="waitScreen1">
+        <div class="wait-box">
+            <p>Please wait...</p>
+            <button class="continue-btn" onclick="goToMainSession()">Continue</button>
         </div>
     </div>
 
@@ -1268,6 +1516,109 @@ HTML_TEMPLATE = r'''
         let timerInterval;
         const API_BASE = window.location.origin;
 
+        // Comprehension questions correct answers
+        const correctAnswers = {
+            q1: 'False',
+            q2: 'False',
+            q3: 'True',
+            q4: 'a'
+        };
+
+        const hints = {
+            q1: 'The ideas are conceptual only—they do not need to exist yet or be fully feasible.',
+            q2: 'Generating several ideas might be helpful for brainstorming, but you will be evaluated based on the final idea you submit.',
+            q3: 'Evaluations will be made based on the final idea you submit to the system.',
+            q4: 'The final score is calculated as 40% × Originality Score + 60% × Quality Score.'
+        };
+
+        function checkComprehension() {
+            const answers = {
+                q1: document.querySelector('input[name="q1"]:checked')?.value,
+                q2: document.querySelector('input[name="q2"]:checked')?.value,
+                q3: document.querySelector('input[name="q3"]:checked')?.value,
+                q4: document.querySelector('input[name="q4"]:checked')?.value
+            };
+
+            // Check if all questions are answered
+            const unanswered = Object.keys(answers).filter(q => !answers[q]);
+            if (unanswered.length > 0) {
+                alert('Please answer all questions before continuing.');
+                return;
+            }
+
+            // Check for incorrect answers
+            const incorrectQuestions = [];
+            Object.keys(correctAnswers).forEach(q => {
+                if (answers[q] !== correctAnswers[q]) {
+                    incorrectQuestions.push(q);
+                }
+            });
+
+            if (incorrectQuestions.length > 0) {
+                // Show hints modal
+                showHints(incorrectQuestions);
+            } else {
+                // All correct, proceed to wait screen
+                document.getElementById('comprehensionScreen').classList.remove('active');
+                document.getElementById('waitScreen1').classList.add('active');
+            }
+        }
+
+        function showHints(incorrectQuestions) {
+            const hintContent = document.getElementById('hintContent');
+            hintContent.innerHTML = '';
+
+            incorrectQuestions.forEach((q, index) => {
+                const questionNum = q.replace('q', '');
+                const hintDiv = document.createElement('div');
+                hintDiv.className = 'hint-item';
+                hintDiv.innerHTML = `
+                    <strong>Question ${questionNum}:</strong>
+                    <div class="hint-text">${hints[q]}</div>
+                `;
+                hintContent.appendChild(hintDiv);
+            });
+
+            document.getElementById('hintModal').classList.add('active');
+        }
+
+        function closeHintModal() {
+            document.getElementById('hintModal').classList.remove('active');
+        }
+
+        function goToMainSession() {
+            // Start the session and timer NOW
+            fetch(API_BASE + '/api/start_session', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({team_id: teamId, participant_id: participantId})
+            })
+            .then(response => response.json())
+            .then(data => {
+                loadMessages();
+                loadIdeas();
+                loadFinalIdea();
+
+                // Start timer NOW
+                startTimer();
+
+                // Send heartbeat every 3 seconds (for backend tracking only)
+                sendHeartbeat();
+                setInterval(() => {
+                    sendHeartbeat();
+                }, 3000);
+
+                pollInterval = setInterval(() => {
+                    loadMessages();
+                    loadIdeas();
+                    loadFinalIdea();
+                }, 2000);
+            });
+
+            document.getElementById('waitScreen1').classList.remove('active');
+            document.getElementById('mainContainer').classList.add('active');
+        }
+
         function showInstructions() {
             document.getElementById('mainContainer').classList.remove('active');
             document.getElementById('instructionsScreen').classList.add('active');
@@ -1339,7 +1690,7 @@ HTML_TEMPLATE = r'''
 
         function startStudy() {
             const participantInput = document.getElementById('participantId').value.trim();
-            
+
             if (!participantInput) {
                 alert('Please enter Participant ID');
                 return;
@@ -1354,36 +1705,10 @@ HTML_TEMPLATE = r'''
             // Use participant ID as team ID for individual sessions
             teamId = participantInput;
             participantId = participantInput;
-            
-            fetch(API_BASE + '/api/start_session', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({team_id: teamId, participant_id: participantId})
-            })
-            .then(response => response.json())
-            .then(data => {
-                loadMessages();
-                loadIdeas();
-                loadFinalIdea();
-                
-                // Start timer
-                startTimer();
-                
-                // Send heartbeat every 3 seconds (for backend tracking only)
-                sendHeartbeat();
-                setInterval(() => {
-                    sendHeartbeat();
-                }, 3000);
-                
-                pollInterval = setInterval(() => {
-                    loadMessages();
-                    loadIdeas();
-                    loadFinalIdea();
-                }, 2000);
-            });
 
+            // Go to comprehension screen instead of main session
             document.getElementById('loginScreen').style.display = 'none';
-            document.getElementById('mainContainer').classList.add('active');
+            document.getElementById('comprehensionScreen').classList.add('active');
         }
 
         function loadMessages() {
