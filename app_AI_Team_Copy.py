@@ -119,6 +119,18 @@ def init_db():
             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS comprehension_attempts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            team_id TEXT NOT NULL,
+            participant_id TEXT NOT NULL,
+            q1_attempts INTEGER DEFAULT 0,
+            q2_attempts INTEGER DEFAULT 0,
+            q3_attempts INTEGER DEFAULT 0,
+            q4_attempts INTEGER DEFAULT 0,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
     conn.commit()
     conn.close()
 
@@ -1526,6 +1538,14 @@ HTML_TEMPLATE = r'''
             q4: 'The final score is calculated as 40% × Originality Score + 60% × Quality Score.'
         };
 
+        // Track attempts per question
+        let comprehensionAttempts = {
+            q1: 0,
+            q2: 0,
+            q3: 0,
+            q4: 0
+        };
+
         function checkComprehension() {
             const answers = {
                 q1: document.querySelector('input[name="q1"]:checked')?.value,
@@ -1541,9 +1561,12 @@ HTML_TEMPLATE = r'''
                 return;
             }
 
-            // Check for incorrect answers
+            // Check for incorrect answers and increment attempts
             const incorrectQuestions = [];
             Object.keys(correctAnswers).forEach(q => {
+                // Increment attempt count for this question
+                comprehensionAttempts[q]++;
+
                 if (answers[q] !== correctAnswers[q]) {
                     incorrectQuestions.push(q);
                 }
@@ -1553,7 +1576,10 @@ HTML_TEMPLATE = r'''
                 // Show hints modal
                 showHints(incorrectQuestions);
             } else {
-                // All correct, proceed to wait screen
+                // All correct! Save attempts to database
+                saveComprehensionAttempts();
+
+                // Proceed to wait screen
                 document.getElementById('comprehensionScreen').classList.remove('active');
                 document.getElementById('waitScreen1').classList.add('active');
             }
@@ -1579,6 +1605,29 @@ HTML_TEMPLATE = r'''
 
         function closeHintModal() {
             document.getElementById('hintModal').classList.remove('active');
+        }
+
+        function saveComprehensionAttempts() {
+            // Save comprehension attempts to database
+            fetch(API_BASE + '/api/save_comprehension_attempts', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    team_id: teamId,
+                    participant_id: participantId,
+                    q1_attempts: comprehensionAttempts.q1,
+                    q2_attempts: comprehensionAttempts.q2,
+                    q3_attempts: comprehensionAttempts.q3,
+                    q4_attempts: comprehensionAttempts.q4
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                console.log('[Comprehension] Attempts saved:', data);
+            })
+            .catch(err => {
+                console.error('[Comprehension] Error saving attempts:', err);
+            });
         }
 
         function goToMainSession() {
@@ -2520,6 +2569,41 @@ def start_session():
         active_teams[team_id] = {'messages': []}
     
     return jsonify({'success': True, 'team_id': team_id, 'participant_id': participant_id})
+
+@app.route('/api/save_comprehension_attempts', methods=['POST'])
+def save_comprehension_attempts():
+    data = request.json
+    team_id = data.get('team_id')
+    participant_id = data.get('participant_id')
+    q1_attempts = data.get('q1_attempts', 0)
+    q2_attempts = data.get('q2_attempts', 0)
+    q3_attempts = data.get('q3_attempts', 0)
+    q4_attempts = data.get('q4_attempts', 0)
+
+    if not team_id or not participant_id:
+        return jsonify({'error': 'Team ID and Participant ID required'}), 400
+
+    conn = sqlite3.connect('study_data.db')
+    c = conn.cursor()
+    c.execute('''
+        INSERT INTO comprehension_attempts
+        (team_id, participant_id, q1_attempts, q2_attempts, q3_attempts, q4_attempts)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ''', (team_id, participant_id, q1_attempts, q2_attempts, q3_attempts, q4_attempts))
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        'success': True,
+        'team_id': team_id,
+        'participant_id': participant_id,
+        'attempts': {
+            'q1': q1_attempts,
+            'q2': q2_attempts,
+            'q3': q3_attempts,
+            'q4': q4_attempts
+        }
+    })
 
 @app.route('/api/messages/<team_id>', methods=['GET'])
 def get_messages(team_id):
