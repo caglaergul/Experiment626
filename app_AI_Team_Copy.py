@@ -1546,6 +1546,14 @@ HTML_TEMPLATE = r'''
             q4: 0
         };
 
+        // Track which questions have been answered correctly
+        let questionsCorrect = {
+            q1: false,
+            q2: false,
+            q3: false,
+            q4: false
+        };
+
         function checkComprehension() {
             const answers = {
                 q1: document.querySelector('input[name="q1"]:checked')?.value,
@@ -1564,11 +1572,16 @@ HTML_TEMPLATE = r'''
             // Check for incorrect answers and increment attempts
             const incorrectQuestions = [];
             Object.keys(correctAnswers).forEach(q => {
-                // Increment attempt count for this question
-                comprehensionAttempts[q]++;
+                // Only increment attempt count if this question hasn't been answered correctly yet
+                if (!questionsCorrect[q]) {
+                    comprehensionAttempts[q]++;
+                }
 
                 if (answers[q] !== correctAnswers[q]) {
                     incorrectQuestions.push(q);
+                } else {
+                    // Mark this question as correctly answered
+                    questionsCorrect[q] = true;
                 }
             });
 
