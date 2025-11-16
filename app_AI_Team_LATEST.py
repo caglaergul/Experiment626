@@ -130,6 +130,7 @@ def init_db():
             q4_attempts INTEGER DEFAULT 0,
             q5_attempts INTEGER DEFAULT 0,
             q6_attempts INTEGER DEFAULT 0,
+            q7_attempts INTEGER DEFAULT 0,
             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
@@ -946,6 +947,9 @@ HTML_TEMPLATE = r'''
 
         .modal-body {
             margin-bottom: 25px;
+            max-height: 400px;
+            overflow-y: auto;
+            cursor: default;
         }
 
         .hint-item {
@@ -1193,6 +1197,28 @@ HTML_TEMPLATE = r'''
                     <div class="radio-option">
                         <input type="radio" id="q6_false" name="q6" value="False">
                         <label for="q6_false">False</label>
+                    </div>
+                </div>
+            </div>
+
+            <div class="comprehension-question">
+                <label>7. If you receive 10 points for Quality, and 5 points for Originality of your idea, your final points will be calculated as:</label>
+                <div class="radio-group">
+                    <div class="radio-option">
+                        <input type="radio" id="q7_a" name="q7" value="a">
+                        <label for="q7_a">a) 60% × 10 + 40% × 5 = 8</label>
+                    </div>
+                    <div class="radio-option">
+                        <input type="radio" id="q7_b" name="q7" value="b">
+                        <label for="q7_b">b) 40% × 10 + 60% × 5 = 7</label>
+                    </div>
+                    <div class="radio-option">
+                        <input type="radio" id="q7_c" name="q7" value="c">
+                        <label for="q7_c">c) 50% × 10 + 50% × 5 = 7.5</label>
+                    </div>
+                    <div class="radio-option">
+                        <input type="radio" id="q7_d" name="q7" value="d">
+                        <label for="q7_d">d) 10 + 5 = 15</label>
                     </div>
                 </div>
             </div>
@@ -1574,7 +1600,8 @@ HTML_TEMPLATE = r'''
             q3: 'True',
             q4: 'True',
             q5: 'False',
-            q6: 'True'
+            q6: 'True',
+            q7: 'a'
         };
 
         const hints = {
@@ -1583,7 +1610,8 @@ HTML_TEMPLATE = r'''
             q3: 'Evaluations will be made based on the final idea you submit to the system.',
             q4: 'The interface will not let you submit your idea before both team members approve it.',
             q5: 'None of the team members can edit the final idea after any one of the team members give approval. In order to be able to edit the final idea, both team members must have their approval buttons unchecked.',
-            q6: 'You are highly encouraged to use Generative AI for this brainstorming task.'
+            q6: 'You are highly encouraged to use Generative AI for this brainstorming task.',
+            q7: 'The final score is calculated as 40% × Originality Score + 60% × Quality Score.'
         };
 
         // Track attempts per question
@@ -1593,7 +1621,8 @@ HTML_TEMPLATE = r'''
             q3: 0,
             q4: 0,
             q5: 0,
-            q6: 0
+            q6: 0,
+            q7: 0
         };
 
         // Track which questions have been answered correctly
@@ -1603,7 +1632,8 @@ HTML_TEMPLATE = r'''
             q3: false,
             q4: false,
             q5: false,
-            q6: false
+            q6: false,
+            q7: false
         };
 
         function checkComprehension() {
@@ -1613,7 +1643,8 @@ HTML_TEMPLATE = r'''
                 q3: document.querySelector('input[name="q3"]:checked')?.value,
                 q4: document.querySelector('input[name="q4"]:checked')?.value,
                 q5: document.querySelector('input[name="q5"]:checked')?.value,
-                q6: document.querySelector('input[name="q6"]:checked')?.value
+                q6: document.querySelector('input[name="q6"]:checked')?.value,
+                q7: document.querySelector('input[name="q7"]:checked')?.value
             };
 
             // Check if all questions are answered
@@ -1687,7 +1718,8 @@ HTML_TEMPLATE = r'''
                     q3_attempts: comprehensionAttempts.q3,
                     q4_attempts: comprehensionAttempts.q4,
                     q5_attempts: comprehensionAttempts.q5,
-                    q6_attempts: comprehensionAttempts.q6
+                    q6_attempts: comprehensionAttempts.q6,
+                    q7_attempts: comprehensionAttempts.q7
                 })
             })
             .then(response => response.json())
@@ -2674,6 +2706,7 @@ def save_comprehension_attempts():
     q4_attempts = data.get('q4_attempts', 0)
     q5_attempts = data.get('q5_attempts', 0)
     q6_attempts = data.get('q6_attempts', 0)
+    q7_attempts = data.get('q7_attempts', 0)
 
     if not team_id or not participant_id:
         return jsonify({'error': 'Team ID and Participant ID required'}), 400
@@ -2682,9 +2715,9 @@ def save_comprehension_attempts():
     c = conn.cursor()
     c.execute('''
         INSERT INTO comprehension_attempts
-        (team_id, participant_id, q1_attempts, q2_attempts, q3_attempts, q4_attempts, q5_attempts, q6_attempts)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (team_id, participant_id, q1_attempts, q2_attempts, q3_attempts, q4_attempts, q5_attempts, q6_attempts))
+        (team_id, participant_id, q1_attempts, q2_attempts, q3_attempts, q4_attempts, q5_attempts, q6_attempts, q7_attempts)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (team_id, participant_id, q1_attempts, q2_attempts, q3_attempts, q4_attempts, q5_attempts, q6_attempts, q7_attempts))
     conn.commit()
     conn.close()
 
