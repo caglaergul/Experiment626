@@ -620,8 +620,8 @@ HTML_TEMPLATE = r'''
 
         .final-description-textarea {
             width: 100%;
-            min-height: 50px;
-            max-height: 50px;
+            min-height: 120px;
+            max-height: 120px;
             padding: 8px;
             border: 2px solid #e0e0e0;
             border-radius: 6px;
