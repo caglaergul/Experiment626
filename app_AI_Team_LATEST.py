@@ -2537,7 +2537,7 @@ HTML_TEMPLATE = r'''
             })
             .then(() => {
                 document.getElementById('surveyPage1').classList.remove('active');
-                document.getElementById('surveyPage2').classList.add('active');
+                document.getElementById('strategyPage').classList.add('active');
             });
         }
 
@@ -2630,7 +2630,7 @@ HTML_TEMPLATE = r'''
             })
             .then(() => {
                 document.getElementById('surveyPage3').classList.remove('active');
-                document.getElementById('strategyPage').classList.add('active');
+                document.getElementById('thankYouScreen').classList.add('active');
             });
         }
 
@@ -2654,7 +2654,7 @@ HTML_TEMPLATE = r'''
             })
             .then(() => {
                 document.getElementById('strategyPage').classList.remove('active');
-                document.getElementById('thankYouScreen').classList.add('active');
+                document.getElementById('surveyPage2').classList.add('active');
             });
         }
 
