@@ -3157,11 +3157,14 @@ def save_survey_page2():
     # Validate employment_status
     if employment_status not in ['Undergraduate student', 'Graduate student']:
         return jsonify({'error': 'Invalid employment status'}), 400
-    
+
     # Validate major_field
-    if major_field not in ['STEM', 'Business and Economics', 'Arts and Humanities', 'Other']:
+    valid_major_fields = ['STEM', 'Business and Economics', 'Social Sciences',
+                          'Arts and Humanities', 'Health and Medical Sciences',
+                          'Education', 'Law', 'Other']
+    if major_field not in valid_major_fields:
         return jsonify({'error': 'Invalid major field'}), 400
-    
+
     # Validate age is integer
     try:
         age_int = int(age)
