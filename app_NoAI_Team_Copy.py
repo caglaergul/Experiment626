@@ -1481,7 +1481,11 @@ HTML_TEMPLATE = r'''
                         <option value="">Select an answer</option>
                         <option value="STEM">STEM (Science, Technology, Engineering and Mathematics)</option>
                         <option value="Business and Economics">Business and Economics</option>
+                        <option value="Social Sciences">Social Sciences</option>
                         <option value="Arts and Humanities">Arts and Humanities</option>
+                        <option value="Health and Medical Sciences">Health and Medical Sciences</option>
+                        <option value="Education">Education</option>
+                        <option value="Law">Law</option>
                         <option value="Other">Other</option>
                     </select>
                 </div>
