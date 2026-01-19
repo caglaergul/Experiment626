@@ -2649,10 +2649,7 @@ def add_idea():
 
 @app.route('/api/final_idea/<team_id>', methods=['GET'])
 def get_final_idea(team_id):
-    # Check in-memory store first
-    if team_id in active_teams and 'final_data' in active_teams[team_id]:
-        return jsonify(active_teams[team_id]['final_data'])
-
+    # Always read from database to support multiple worker processes
     conn = sqlite3.connect('study_data.db')
     c = conn.cursor()
     c.execute('SELECT final_idea FROM teams WHERE team_id = ?', (team_id,))
@@ -2686,24 +2683,15 @@ def update_final():
     
     if not team_id:
         return jsonify({'error': 'Team ID required'}), 400
-    
-    # Store in memory for real-time sync
-    if team_id not in active_teams:
-        active_teams[team_id] = {'messages': []}
-    
-    active_teams[team_id]['final_data'] = {
-        'title': title,
-        'description': description
-    }
-    
-    # Also update database
+
+    # Update database (single source of truth for multiple workers)
     final_idea_combined = f"Title: {title}\n\nDescription: {description}"
     conn = sqlite3.connect('study_data.db')
     c = conn.cursor()
     c.execute('UPDATE teams SET final_idea = ? WHERE team_id = ?', (final_idea_combined, team_id))
     conn.commit()
     conn.close()
-    
+
     return jsonify({'success': True})
 
 @app.route('/api/submit', methods=['POST'])
