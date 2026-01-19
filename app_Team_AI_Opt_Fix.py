@@ -143,6 +143,17 @@ def init_db():
             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+
+    # Add approval columns if they don't exist (migration for multi-worker fix)
+    try:
+        c.execute('ALTER TABLE teams ADD COLUMN p1_approved BOOLEAN DEFAULT 0')
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+    try:
+        c.execute('ALTER TABLE teams ADD COLUMN p2_approved BOOLEAN DEFAULT 0')
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+
     conn.commit()
     conn.close()
 
@@ -2907,11 +2918,7 @@ def submit():
     ''', (final_idea, team_id))
     conn.commit()
     conn.close()
-    
-    # Mark as submitted in memory too for real-time sync
-    if team_id in team_approvals:
-        team_approvals[team_id]['submitted'] = True
-    
+
     return jsonify({'success': True})
 
 @app.route('/api/set_approval', methods=['POST'])
@@ -2920,25 +2927,49 @@ def set_approval():
     team_id = data.get('team_id')
     participant_id = str(data.get('participant_id'))
     approved = data.get('approved', False)
-    
+
     if not team_id or not participant_id:
         return jsonify({'error': 'Team ID and Participant ID required'}), 400
-    
-    if team_id not in team_approvals:
-        team_approvals[team_id] = {'1': False, '2': False}
-    
-    team_approvals[team_id][participant_id] = approved
-    
-    return jsonify({'success': True, 'approvals': team_approvals[team_id]})
+
+    # Update database (single source of truth for multiple workers)
+    conn = sqlite3.connect('study_data.db')
+    c = conn.cursor()
+
+    # Determine which column to update based on participant_id
+    column = f'p{participant_id}_approved'
+    c.execute(f'UPDATE teams SET {column} = ? WHERE team_id = ?', (1 if approved else 0, team_id))
+    conn.commit()
+
+    # Read back both approval states
+    c.execute('SELECT p1_approved, p2_approved FROM teams WHERE team_id = ?', (team_id,))
+    row = c.fetchone()
+    conn.close()
+
+    approvals = {'1': False, '2': False}
+    if row:
+        approvals = {'1': bool(row[0]), '2': bool(row[1])}
+
+    return jsonify({'success': True, 'approvals': approvals})
 
 @app.route('/api/get_approvals/<team_id>', methods=['GET'])
 def get_approvals(team_id):
-    if team_id not in team_approvals:
-        team_approvals[team_id] = {'1': False, '2': False, 'submitted': False}
-    
+    # Always read from database to support multiple worker processes
+    conn = sqlite3.connect('study_data.db')
+    c = conn.cursor()
+    c.execute('SELECT p1_approved, p2_approved, submitted FROM teams WHERE team_id = ?', (team_id,))
+    row = c.fetchone()
+    conn.close()
+
+    approvals = {'1': False, '2': False}
+    submitted = False
+
+    if row:
+        approvals = {'1': bool(row[0]), '2': bool(row[1])}
+        submitted = bool(row[2])
+
     return jsonify({
-        'approvals': team_approvals[team_id],
-        'submitted': team_approvals[team_id].get('submitted', False)
+        'approvals': approvals,
+        'submitted': submitted
     })
 
 @app.route('/api/heartbeat', methods=['POST'])
