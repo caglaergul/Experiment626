@@ -154,6 +154,16 @@ def init_db():
     except sqlite3.OperationalError:
         pass  # Column already exists
 
+    # Add heartbeat columns for online status tracking (multi-worker fix)
+    try:
+        c.execute('ALTER TABLE teams ADD COLUMN p1_last_heartbeat TIMESTAMP')
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+    try:
+        c.execute('ALTER TABLE teams ADD COLUMN p2_last_heartbeat TIMESTAMP')
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+
     conn.commit()
     conn.close()
 
@@ -2977,15 +2987,20 @@ def heartbeat():
     data = request.json
     team_id = data.get('team_id')
     participant_id = data.get('participant_id')
-    
+
     if not team_id or not participant_id:
         return jsonify({'error': 'Team ID and Participant ID required'}), 400
-    
-    if team_id not in online_participants:
-        online_participants[team_id] = {}
-    
-    online_participants[team_id][participant_id] = time.time()
-    
+
+    # Update database (single source of truth for multiple workers)
+    conn = sqlite3.connect('study_data.db')
+    c = conn.cursor()
+
+    # Determine which column to update based on participant_id
+    column = f'p{participant_id}_last_heartbeat'
+    c.execute(f'UPDATE teams SET {column} = CURRENT_TIMESTAMP WHERE team_id = ?', (team_id,))
+    conn.commit()
+    conn.close()
+
     return jsonify({'success': True})
 
 @app.route('/api/typing_metrics', methods=['POST'])
@@ -3129,16 +3144,31 @@ def update_typing_metrics():
 
 @app.route('/api/online_status/<team_id>', methods=['GET'])
 def get_online_status(team_id):
-    if team_id not in online_participants:
-        return jsonify({'online': {}})
-    
-    current_time = time.time()
+    # Always read from database to support multiple worker processes
+    conn = sqlite3.connect('study_data.db')
+    c = conn.cursor()
+    c.execute('SELECT p1_last_heartbeat, p2_last_heartbeat FROM teams WHERE team_id = ?', (team_id,))
+    row = c.fetchone()
+    conn.close()
+
     online = {}
-    
-    # Consider participant online if heartbeat received within last 5 seconds
-    for participant_id, last_heartbeat in online_participants[team_id].items():
-        online[participant_id] = (current_time - last_heartbeat) < 5
-    
+
+    if row:
+        current_time = datetime.now()
+
+        # Consider participant online if heartbeat received within last 5 seconds
+        if row[0]:  # p1_last_heartbeat
+            p1_heartbeat = datetime.fromisoformat(row[0])
+            online['1'] = (current_time - p1_heartbeat).total_seconds() < 5
+        else:
+            online['1'] = False
+
+        if row[1]:  # p2_last_heartbeat
+            p2_heartbeat = datetime.fromisoformat(row[1])
+            online['2'] = (current_time - p2_heartbeat).total_seconds() < 5
+        else:
+            online['2'] = False
+
     return jsonify({'online': online})
 
 @app.route('/api/get_timer/<team_id>', methods=['GET'])
