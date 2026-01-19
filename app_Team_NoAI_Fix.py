@@ -143,6 +143,27 @@ def init_db():
             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+
+    # Add approval columns if they don't exist (migration for multi-worker fix)
+    try:
+        c.execute('ALTER TABLE teams ADD COLUMN p1_approved BOOLEAN DEFAULT 0')
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+    try:
+        c.execute('ALTER TABLE teams ADD COLUMN p2_approved BOOLEAN DEFAULT 0')
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+
+    # Add heartbeat columns for online status tracking (multi-worker fix)
+    try:
+        c.execute('ALTER TABLE teams ADD COLUMN p1_last_heartbeat TIMESTAMP')
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+    try:
+        c.execute('ALTER TABLE teams ADD COLUMN p2_last_heartbeat TIMESTAMP')
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+
     conn.commit()
     conn.close()
 
@@ -2065,8 +2086,8 @@ HTML_TEMPLATE = r'''
         let lastSavedDescription = '';
         let isUserEditingTitle = false;
         let isUserEditingDesc = false;
-        let titleEditTimeout;
-        let descEditTimeout;
+        let isProgrammaticTitleUpdate = false;
+        let isProgrammaticDescUpdate = false;
 
         // Typing metrics tracking
         let typingMetrics = {
@@ -2191,13 +2212,17 @@ HTML_TEMPLATE = r'''
                     const descTextarea = document.getElementById('finalDescription');
                     
                     if (!isUserEditingTitle && serverTitle !== titleInput.value) {
+                        isProgrammaticTitleUpdate = true;
                         titleInput.value = serverTitle;
                         updateWordCount('title');
+                        isProgrammaticTitleUpdate = false;
                     }
-                    
+
                     if (!isUserEditingDesc && serverDesc !== descTextarea.value) {
+                        isProgrammaticDescUpdate = true;
                         descTextarea.value = serverDesc;
                         updateWordCount('description');
+                        isProgrammaticDescUpdate = false;
                     }
                 });
         }
@@ -2227,8 +2252,11 @@ HTML_TEMPLATE = r'''
         });
 
         document.getElementById('finalTitle').addEventListener('input', function() {
-            isUserEditingTitle = true;
-            
+            // Skip if this is a programmatic update from server
+            if (isProgrammaticTitleUpdate) {
+                return;
+            }
+
             // Enforce 5 word limit
             const words = countWords(this.value);
             if (words > 5) {
@@ -2236,14 +2264,10 @@ HTML_TEMPLATE = r'''
                 const wordArray = this.value.trim().split(/\s+/);
                 this.value = wordArray.slice(0, 5).join(' ');
             }
-            
+
             updateWordCount('title');
-            
-            clearTimeout(titleEditTimeout);
-            titleEditTimeout = setTimeout(() => {
-                isUserEditingTitle = false;
-            }, 3000);
-            
+
+            // Save after 1 second of inactivity
             clearTimeout(this.saveTimer);
             this.saveTimer = setTimeout(() => {
                 saveFinalIdea();
@@ -2266,8 +2290,11 @@ HTML_TEMPLATE = r'''
         });
 
         document.getElementById('finalDescription').addEventListener('input', function() {
-            isUserEditingDesc = true;
-            
+            // Skip if this is a programmatic update from server
+            if (isProgrammaticDescUpdate) {
+                return;
+            }
+
             // Enforce 80 word limit
             const words = countWords(this.value);
             if (words > 80) {
@@ -2275,14 +2302,10 @@ HTML_TEMPLATE = r'''
                 const wordArray = this.value.trim().split(/\s+/);
                 this.value = wordArray.slice(0, 80).join(' ');
             }
-            
+
             updateWordCount('description');
-            
-            clearTimeout(descEditTimeout);
-            descEditTimeout = setTimeout(() => {
-                isUserEditingDesc = false;
-            }, 3000);
-            
+
+            // Save after 1 second of inactivity
             clearTimeout(this.saveTimer);
             this.saveTimer = setTimeout(() => {
                 saveFinalIdea();
@@ -2773,19 +2796,29 @@ def add_idea():
 
 @app.route('/api/final_idea/<team_id>', methods=['GET'])
 def get_final_idea(team_id):
-    # Check in-memory store first
-    if team_id in active_teams and 'final_data' in active_teams[team_id]:
-        return jsonify(active_teams[team_id]['final_data'])
-    
+    # Always read from database to support multiple worker processes
+    # This also enables real-time collaboration between team members
     conn = sqlite3.connect('study_data.db')
     c = conn.cursor()
     c.execute('SELECT final_idea FROM teams WHERE team_id = ?', (team_id,))
     row = c.fetchone()
     conn.close()
-    
+
+    # Parse the final_idea field from database
+    title = ''
+    description = ''
+    if row and row[0]:
+        final_idea_text = row[0]
+        # Parse format: "Title: {title}\n\nDescription: {description}"
+        if 'Title:' in final_idea_text and 'Description:' in final_idea_text:
+            parts = final_idea_text.split('\n\n')
+            if len(parts) >= 2:
+                title = parts[0].replace('Title:', '').strip()
+                description = parts[1].replace('Description:', '').strip()
+
     return jsonify({
-        'title': '',
-        'description': '',
+        'title': title,
+        'description': description,
         'final_idea': row[0] if row and row[0] else ''
     })
 
@@ -2798,24 +2831,16 @@ def update_final():
     
     if not team_id:
         return jsonify({'error': 'Team ID required'}), 400
-    
-    # Store in memory for real-time sync
-    if team_id not in active_teams:
-        active_teams[team_id] = {'messages': []}
-    
-    active_teams[team_id]['final_data'] = {
-        'title': title,
-        'description': description
-    }
-    
-    # Also update database
+
+    # Update database (single source of truth for multiple workers)
+    # This ensures real-time collaboration between team members across all workers
     final_idea_combined = f"Title: {title}\n\nDescription: {description}"
     conn = sqlite3.connect('study_data.db')
     c = conn.cursor()
     c.execute('UPDATE teams SET final_idea = ? WHERE team_id = ?', (final_idea_combined, team_id))
     conn.commit()
     conn.close()
-    
+
     return jsonify({'success': True})
 
 @app.route('/api/submit', methods=['POST'])
@@ -2836,11 +2861,7 @@ def submit():
     ''', (final_idea, team_id))
     conn.commit()
     conn.close()
-    
-    # Mark as submitted in memory too for real-time sync
-    if team_id in team_approvals:
-        team_approvals[team_id]['submitted'] = True
-    
+
     return jsonify({'success': True})
 
 @app.route('/api/set_approval', methods=['POST'])
@@ -2849,25 +2870,49 @@ def set_approval():
     team_id = data.get('team_id')
     participant_id = str(data.get('participant_id'))
     approved = data.get('approved', False)
-    
+
     if not team_id or not participant_id:
         return jsonify({'error': 'Team ID and Participant ID required'}), 400
-    
-    if team_id not in team_approvals:
-        team_approvals[team_id] = {'1': False, '2': False}
-    
-    team_approvals[team_id][participant_id] = approved
-    
-    return jsonify({'success': True, 'approvals': team_approvals[team_id]})
+
+    # Update database (single source of truth for multiple workers)
+    conn = sqlite3.connect('study_data.db')
+    c = conn.cursor()
+
+    # Determine which column to update based on participant_id
+    column = f'p{participant_id}_approved'
+    c.execute(f'UPDATE teams SET {column} = ? WHERE team_id = ?', (1 if approved else 0, team_id))
+    conn.commit()
+
+    # Read back both approval states
+    c.execute('SELECT p1_approved, p2_approved FROM teams WHERE team_id = ?', (team_id,))
+    row = c.fetchone()
+    conn.close()
+
+    approvals = {'1': False, '2': False}
+    if row:
+        approvals = {'1': bool(row[0]), '2': bool(row[1])}
+
+    return jsonify({'success': True, 'approvals': approvals})
 
 @app.route('/api/get_approvals/<team_id>', methods=['GET'])
 def get_approvals(team_id):
-    if team_id not in team_approvals:
-        team_approvals[team_id] = {'1': False, '2': False, 'submitted': False}
-    
+    # Always read from database to support multiple worker processes
+    conn = sqlite3.connect('study_data.db')
+    c = conn.cursor()
+    c.execute('SELECT p1_approved, p2_approved, submitted FROM teams WHERE team_id = ?', (team_id,))
+    row = c.fetchone()
+    conn.close()
+
+    approvals = {'1': False, '2': False}
+    submitted = False
+
+    if row:
+        approvals = {'1': bool(row[0]), '2': bool(row[1])}
+        submitted = bool(row[2])
+
     return jsonify({
-        'approvals': team_approvals[team_id],
-        'submitted': team_approvals[team_id].get('submitted', False)
+        'approvals': approvals,
+        'submitted': submitted
     })
 
 @app.route('/api/export/<team_id>', methods=['GET'])
@@ -2924,15 +2969,20 @@ def heartbeat():
     data = request.json
     team_id = data.get('team_id')
     participant_id = data.get('participant_id')
-    
+
     if not team_id or not participant_id:
         return jsonify({'error': 'Team ID and Participant ID required'}), 400
-    
-    if team_id not in online_participants:
-        online_participants[team_id] = {}
-    
-    online_participants[team_id][participant_id] = time.time()
-    
+
+    # Update database (single source of truth for multiple workers)
+    conn = sqlite3.connect('study_data.db')
+    c = conn.cursor()
+
+    # Determine which column to update based on participant_id
+    column = f'p{participant_id}_last_heartbeat'
+    c.execute(f'UPDATE teams SET {column} = CURRENT_TIMESTAMP WHERE team_id = ?', (team_id,))
+    conn.commit()
+    conn.close()
+
     return jsonify({'success': True})
 
 @app.route('/api/typing_metrics', methods=['POST'])
@@ -3076,16 +3126,31 @@ def update_typing_metrics():
 
 @app.route('/api/online_status/<team_id>', methods=['GET'])
 def get_online_status(team_id):
-    if team_id not in online_participants:
-        return jsonify({'online': {}})
-    
-    current_time = time.time()
+    # Always read from database to support multiple worker processes
+    conn = sqlite3.connect('study_data.db')
+    c = conn.cursor()
+    c.execute('SELECT p1_last_heartbeat, p2_last_heartbeat FROM teams WHERE team_id = ?', (team_id,))
+    row = c.fetchone()
+    conn.close()
+
     online = {}
-    
-    # Consider participant online if heartbeat received within last 5 seconds
-    for participant_id, last_heartbeat in online_participants[team_id].items():
-        online[participant_id] = (current_time - last_heartbeat) < 5
-    
+
+    if row:
+        current_time = datetime.now()
+
+        # Consider participant online if heartbeat received within last 5 seconds
+        if row[0]:  # p1_last_heartbeat
+            p1_heartbeat = datetime.fromisoformat(row[0])
+            online['1'] = (current_time - p1_heartbeat).total_seconds() < 5
+        else:
+            online['1'] = False
+
+        if row[1]:  # p2_last_heartbeat
+            p2_heartbeat = datetime.fromisoformat(row[1])
+            online['2'] = (current_time - p2_heartbeat).total_seconds() < 5
+        else:
+            online['2'] = False
+
     return jsonify({'online': online})
 
 @app.route('/api/get_timer/<team_id>', methods=['GET'])
