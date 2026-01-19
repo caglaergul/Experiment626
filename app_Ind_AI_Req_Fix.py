@@ -2046,8 +2046,6 @@ HTML_TEMPLATE = r'''
         let isUserEditingDesc = false;
         let isProgrammaticTitleUpdate = false;
         let isProgrammaticDescUpdate = false;
-        let titleEditTimeout;
-        let descEditTimeout;
 
         // Typing metrics tracking
         let typingMetrics = {
@@ -2223,8 +2221,6 @@ HTML_TEMPLATE = r'''
                 return;
             }
 
-            isUserEditingTitle = true;
-
             // Enforce 5 word limit
             const words = countWords(this.value);
             if (words > 5) {
@@ -2235,11 +2231,7 @@ HTML_TEMPLATE = r'''
 
             updateWordCount('title');
 
-            clearTimeout(titleEditTimeout);
-            titleEditTimeout = setTimeout(() => {
-                isUserEditingTitle = false;
-            }, 3000);
-
+            // Save after 1 second of inactivity
             clearTimeout(this.saveTimer);
             this.saveTimer = setTimeout(() => {
                 saveFinalIdea();
@@ -2260,8 +2252,6 @@ HTML_TEMPLATE = r'''
                 return;
             }
 
-            isUserEditingDesc = true;
-
             // Enforce 80 word limit
             const words = countWords(this.value);
             if (words > 80) {
@@ -2272,11 +2262,7 @@ HTML_TEMPLATE = r'''
 
             updateWordCount('description');
 
-            clearTimeout(descEditTimeout);
-            descEditTimeout = setTimeout(() => {
-                isUserEditingDesc = false;
-            }, 3000);
-
+            // Save after 1 second of inactivity
             clearTimeout(this.saveTimer);
             this.saveTimer = setTimeout(() => {
                 saveFinalIdea();
