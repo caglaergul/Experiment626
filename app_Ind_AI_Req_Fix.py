@@ -2044,6 +2044,8 @@ HTML_TEMPLATE = r'''
         let lastSavedDescription = '';
         let isUserEditingTitle = false;
         let isUserEditingDesc = false;
+        let isProgrammaticTitleUpdate = false;
+        let isProgrammaticDescUpdate = false;
         let titleEditTimeout;
         let descEditTimeout;
 
@@ -2176,13 +2178,17 @@ HTML_TEMPLATE = r'''
                     const descTextarea = document.getElementById('finalDescription');
                     
                     if (!isUserEditingTitle && serverTitle !== titleInput.value) {
+                        isProgrammaticTitleUpdate = true;
                         titleInput.value = serverTitle;
                         updateWordCount('title');
+                        isProgrammaticTitleUpdate = false;
                     }
-                    
+
                     if (!isUserEditingDesc && serverDesc !== descTextarea.value) {
+                        isProgrammaticDescUpdate = true;
                         descTextarea.value = serverDesc;
                         updateWordCount('description');
+                        isProgrammaticDescUpdate = false;
                     }
                 });
         }
@@ -2212,8 +2218,13 @@ HTML_TEMPLATE = r'''
         });
 
         document.getElementById('finalTitle').addEventListener('input', function() {
+            // Skip if this is a programmatic update from server
+            if (isProgrammaticTitleUpdate) {
+                return;
+            }
+
             isUserEditingTitle = true;
-            
+
             // Enforce 5 word limit
             const words = countWords(this.value);
             if (words > 5) {
@@ -2221,14 +2232,14 @@ HTML_TEMPLATE = r'''
                 const wordArray = this.value.trim().split(/\s+/);
                 this.value = wordArray.slice(0, 5).join(' ');
             }
-            
+
             updateWordCount('title');
-            
+
             clearTimeout(titleEditTimeout);
             titleEditTimeout = setTimeout(() => {
                 isUserEditingTitle = false;
             }, 3000);
-            
+
             clearTimeout(this.saveTimer);
             this.saveTimer = setTimeout(() => {
                 saveFinalIdea();
@@ -2244,8 +2255,13 @@ HTML_TEMPLATE = r'''
         });
 
         document.getElementById('finalDescription').addEventListener('input', function() {
+            // Skip if this is a programmatic update from server
+            if (isProgrammaticDescUpdate) {
+                return;
+            }
+
             isUserEditingDesc = true;
-            
+
             // Enforce 80 word limit
             const words = countWords(this.value);
             if (words > 80) {
@@ -2253,14 +2269,14 @@ HTML_TEMPLATE = r'''
                 const wordArray = this.value.trim().split(/\s+/);
                 this.value = wordArray.slice(0, 80).join(' ');
             }
-            
+
             updateWordCount('description');
-            
+
             clearTimeout(descEditTimeout);
             descEditTimeout = setTimeout(() => {
                 isUserEditingDesc = false;
             }, 3000);
-            
+
             clearTimeout(this.saveTimer);
             this.saveTimer = setTimeout(() => {
                 saveFinalIdea();
