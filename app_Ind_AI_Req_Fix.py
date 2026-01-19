@@ -2650,16 +2650,28 @@ def get_final_idea(team_id):
     # Check in-memory store first
     if team_id in active_teams and 'final_data' in active_teams[team_id]:
         return jsonify(active_teams[team_id]['final_data'])
-    
+
     conn = sqlite3.connect('study_data.db')
     c = conn.cursor()
     c.execute('SELECT final_idea FROM teams WHERE team_id = ?', (team_id,))
     row = c.fetchone()
     conn.close()
-    
+
+    # Parse the final_idea field from database
+    title = ''
+    description = ''
+    if row and row[0]:
+        final_idea_text = row[0]
+        # Parse format: "Title: {title}\n\nDescription: {description}"
+        if 'Title:' in final_idea_text and 'Description:' in final_idea_text:
+            parts = final_idea_text.split('\n\n')
+            if len(parts) >= 2:
+                title = parts[0].replace('Title:', '').strip()
+                description = parts[1].replace('Description:', '').strip()
+
     return jsonify({
-        'title': '',
-        'description': '',
+        'title': title,
+        'description': description,
         'final_idea': row[0] if row and row[0] else ''
     })
 
