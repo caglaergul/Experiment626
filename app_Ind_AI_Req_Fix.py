@@ -1737,6 +1737,26 @@ HTML_TEMPLATE = r'''
             });
         }
 
+        function loadTypingMetrics() {
+            // Load existing typing metrics from database to support resuming after refresh
+            fetch(API_BASE + `/api/typing_metrics/${teamId}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        // Initialize keystroke counts with values from database
+                        typingMetrics.title.keystrokeCount = data.title_keystroke_count || 0;
+                        typingMetrics.title.activeTypingSeconds = data.title_active_typing_seconds || 0;
+                        typingMetrics.description.keystrokeCount = data.description_keystroke_count || 0;
+                        typingMetrics.description.activeTypingSeconds = data.description_active_typing_seconds || 0;
+                        console.log('[Typing Metrics Loaded]', 'Title keystrokes:', typingMetrics.title.keystrokeCount,
+                                    'Description keystrokes:', typingMetrics.description.keystrokeCount);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error loading typing metrics:', error);
+                });
+        }
+
         function goToMainSession() {
             // Start the session and timer NOW
             fetch(API_BASE + '/api/start_session', {
@@ -1749,6 +1769,7 @@ HTML_TEMPLATE = r'''
                 loadMessages();
                 loadIdeas();
                 loadFinalIdea();
+                loadTypingMetrics();  // Load existing typing metrics to preserve keystroke counts
 
                 // Start timer NOW
                 startTimer();
@@ -2838,6 +2859,42 @@ def export_team_data(team_id):
         download_name=f'team_{team_id}_data.csv'
     )
 
+@app.route('/api/typing_metrics/<team_id>', methods=['GET'])
+def get_typing_metrics(team_id):
+    """
+    Retrieve current typing metrics for a team to support resuming after refresh
+    """
+    if not team_id:
+        return jsonify({'error': 'Team ID required'}), 400
+
+    conn = sqlite3.connect('study_data.db')
+    c = conn.cursor()
+    c.execute('''
+        SELECT title_keystroke_count, title_active_typing_seconds,
+               description_keystroke_count, description_active_typing_seconds
+        FROM teams WHERE team_id = ?
+    ''', (team_id,))
+    row = c.fetchone()
+    conn.close()
+
+    if row:
+        return jsonify({
+            'success': True,
+            'title_keystroke_count': row[0] or 0,
+            'title_active_typing_seconds': row[1] or 0,
+            'description_keystroke_count': row[2] or 0,
+            'description_active_typing_seconds': row[3] or 0
+        })
+    else:
+        # Team doesn't exist yet, return zeros
+        return jsonify({
+            'success': True,
+            'title_keystroke_count': 0,
+            'title_active_typing_seconds': 0,
+            'description_keystroke_count': 0,
+            'description_active_typing_seconds': 0
+        })
+
 @app.route('/api/typing_metrics', methods=['POST'])
 def update_typing_metrics():
     data = request.json
@@ -2848,14 +2905,14 @@ def update_typing_metrics():
     active_typing_seconds = data.get('active_typing_seconds', 0)
     first_edit_time = data.get('first_edit_time')
     last_edit_time = data.get('last_edit_time')
-    
+
     if not all([team_id, participant_id, field]):
         return jsonify({'error': 'Missing required fields'}), 400
-    
+
     # Validate field parameter to prevent SQL injection
     if field not in ['title', 'description']:
         return jsonify({'error': 'Invalid field parameter'}), 400
-    
+
     # Safe: Use explicit mapping to avoid string interpolation in SQL
     field_columns = {
         'title': {
@@ -2871,22 +2928,22 @@ def update_typing_metrics():
             'last_edit': 'description_last_edit_time'
         }
     }
-    
+
     cols = field_columns[field]
-    
+
     conn = sqlite3.connect('study_data.db')
     c = conn.cursor()
-    
+
     # Update metrics with hardcoded column names (safe from SQL injection)
     c.execute(f'''
-        UPDATE teams 
+        UPDATE teams
         SET {cols['keystroke']} = ?,
             {cols['typing_seconds']} = ?,
             {cols['first_edit']} = ?,
             {cols['last_edit']} = ?
         WHERE team_id = ?
     ''', (keystroke_count, active_typing_seconds, first_edit_time, last_edit_time, team_id))
-    
+
     conn.commit()
     conn.close()
     
