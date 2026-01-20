@@ -1743,13 +1743,25 @@ HTML_TEMPLATE = r'''
                 .then(response => response.json())
                 .then(data => {
                     if (data.success) {
-                        // Initialize keystroke counts with values from database
+                        // Initialize all title metrics from database
                         typingMetrics.title.keystrokeCount = data.title_keystroke_count || 0;
                         typingMetrics.title.activeTypingSeconds = data.title_active_typing_seconds || 0;
+                        typingMetrics.title.firstEditTime = data.title_first_edit_time || null;
+                        typingMetrics.title.lastEditTime = data.title_last_edit_time || null;
+
+                        // Initialize all description metrics from database
                         typingMetrics.description.keystrokeCount = data.description_keystroke_count || 0;
                         typingMetrics.description.activeTypingSeconds = data.description_active_typing_seconds || 0;
-                        console.log('[Typing Metrics Loaded]', 'Title keystrokes:', typingMetrics.title.keystrokeCount,
-                                    'Description keystrokes:', typingMetrics.description.keystrokeCount);
+                        typingMetrics.description.firstEditTime = data.description_first_edit_time || null;
+                        typingMetrics.description.lastEditTime = data.description_last_edit_time || null;
+
+                        console.log('[Typing Metrics Loaded]',
+                                    'Title - keystrokes:', typingMetrics.title.keystrokeCount,
+                                    'seconds:', typingMetrics.title.activeTypingSeconds,
+                                    'first edit:', typingMetrics.title.firstEditTime,
+                                    'Description - keystrokes:', typingMetrics.description.keystrokeCount,
+                                    'seconds:', typingMetrics.description.activeTypingSeconds,
+                                    'first edit:', typingMetrics.description.firstEditTime);
                     }
                 })
                 .catch(error => {
@@ -2870,8 +2882,8 @@ def get_typing_metrics(team_id):
     conn = sqlite3.connect('study_data.db')
     c = conn.cursor()
     c.execute('''
-        SELECT title_keystroke_count, title_active_typing_seconds,
-               description_keystroke_count, description_active_typing_seconds
+        SELECT title_keystroke_count, title_active_typing_seconds, title_first_edit_time, title_last_edit_time,
+               description_keystroke_count, description_active_typing_seconds, description_first_edit_time, description_last_edit_time
         FROM teams WHERE team_id = ?
     ''', (team_id,))
     row = c.fetchone()
@@ -2882,17 +2894,25 @@ def get_typing_metrics(team_id):
             'success': True,
             'title_keystroke_count': row[0] or 0,
             'title_active_typing_seconds': row[1] or 0,
-            'description_keystroke_count': row[2] or 0,
-            'description_active_typing_seconds': row[3] or 0
+            'title_first_edit_time': row[2],
+            'title_last_edit_time': row[3],
+            'description_keystroke_count': row[4] or 0,
+            'description_active_typing_seconds': row[5] or 0,
+            'description_first_edit_time': row[6],
+            'description_last_edit_time': row[7]
         })
     else:
-        # Team doesn't exist yet, return zeros
+        # Team doesn't exist yet, return zeros/nulls
         return jsonify({
             'success': True,
             'title_keystroke_count': 0,
             'title_active_typing_seconds': 0,
+            'title_first_edit_time': None,
+            'title_last_edit_time': None,
             'description_keystroke_count': 0,
-            'description_active_typing_seconds': 0
+            'description_active_typing_seconds': 0,
+            'description_first_edit_time': None,
+            'description_last_edit_time': None
         })
 
 @app.route('/api/typing_metrics', methods=['POST'])
