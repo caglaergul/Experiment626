@@ -1877,6 +1877,9 @@ HTML_TEMPLATE = r'''
                         } else if (stage === 'survey_page2') {
                             // Resume at survey page 2
                             document.getElementById('surveyPage2').classList.add('active');
+                        } else if (stage === 'strategy_page') {
+                            // Resume at strategy description page
+                            document.getElementById('strategyPage').classList.add('active');
                         } else if (stage === 'survey_page1') {
                             // Resume at survey page 1
                             document.getElementById('surveyPage1').classList.add('active');
@@ -3083,7 +3086,7 @@ def save_comprehension_attempts():
 def check_progress(participant_id):
     """
     Check participant progress and return current stage for auto-resume functionality.
-    Stages: login, comprehension, main_session, survey_page1, survey_page2, survey_page3, completed
+    Stages: login, comprehension, main_session, survey_page1, strategy_page, survey_page2, survey_page3, completed
     """
     if not participant_id:
         return jsonify({'error': 'Participant ID required'}), 400
@@ -3108,6 +3111,9 @@ def check_progress(participant_id):
     c.execute('SELECT id FROM survey_page1 WHERE team_id = ?', (team_id,))
     survey_page1_done = c.fetchone() is not None
 
+    c.execute('SELECT id FROM strategy_descriptions WHERE participant_id = ?', (participant_id,))
+    strategy_description_done = c.fetchone() is not None
+
     c.execute('SELECT id FROM survey_page2 WHERE team_id = ?', (team_id,))
     survey_page2_done = c.fetchone() is not None
 
@@ -3122,8 +3128,10 @@ def check_progress(participant_id):
         stage = 'completed'
     elif survey_page2_done:
         stage = 'survey_page3'
-    elif survey_page1_done:
+    elif strategy_description_done:
         stage = 'survey_page2'
+    elif survey_page1_done:
+        stage = 'strategy_page'
     elif submitted:
         stage = 'survey_page1'
     elif main_session_started:
