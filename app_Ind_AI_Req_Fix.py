@@ -1857,9 +1857,49 @@ HTML_TEMPLATE = r'''
             teamId = participantInput;
             participantId = participantInput;
 
-            // Go to comprehension screen instead of main session
-            document.getElementById('loginScreen').style.display = 'none';
-            document.getElementById('comprehensionScreen').classList.add('active');
+            // Check progress and auto-resume if participant has previous progress
+            fetch(API_BASE + `/api/check_progress/${participantId}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        const stage = data.stage;
+
+                        // Hide login screen
+                        document.getElementById('loginScreen').style.display = 'none';
+
+                        // Redirect to appropriate stage
+                        if (stage === 'completed') {
+                            // Already completed, show thank you screen
+                            document.getElementById('thankYouScreen').classList.add('active');
+                        } else if (stage === 'survey_page3') {
+                            // Resume at survey page 3
+                            document.getElementById('surveyPage3').classList.add('active');
+                        } else if (stage === 'survey_page2') {
+                            // Resume at survey page 2
+                            document.getElementById('surveyPage2').classList.add('active');
+                        } else if (stage === 'survey_page1') {
+                            // Resume at survey page 1
+                            document.getElementById('surveyPage1').classList.add('active');
+                        } else if (stage === 'main_session') {
+                            // Resume main session - load data and start
+                            goToMainSession();
+                        } else {
+                            // Start from comprehension (default for new participants)
+                            document.getElementById('comprehensionScreen').classList.add('active');
+                        }
+                    } else {
+                        // Error checking progress, start from beginning
+                        console.error('Error checking progress:', data.error);
+                        document.getElementById('loginScreen').style.display = 'none';
+                        document.getElementById('comprehensionScreen').classList.add('active');
+                    }
+                })
+                .catch(error => {
+                    // Network error or other issue, start from beginning
+                    console.error('Error checking progress:', error);
+                    document.getElementById('loginScreen').style.display = 'none';
+                    document.getElementById('comprehensionScreen').classList.add('active');
+                });
         }
 
         function loadMessages() {
@@ -3036,6 +3076,67 @@ def save_comprehension_attempts():
     conn.close()
 
     return jsonify({'success': True, 'participant_id': participant_id})
+
+@app.route('/api/check_progress/<participant_id>', methods=['GET'])
+def check_progress(participant_id):
+    """
+    Check participant progress and return current stage for auto-resume functionality.
+    Stages: login, comprehension, main_session, survey_page1, survey_page2, survey_page3, completed
+    """
+    if not participant_id:
+        return jsonify({'error': 'Participant ID required'}), 400
+
+    conn = sqlite3.connect('study_data.db')
+    c = conn.cursor()
+
+    # Use participant_id as team_id for individual sessions
+    team_id = participant_id
+
+    # Check if comprehension was completed
+    c.execute('SELECT id FROM comprehension_attempts WHERE participant_id = ?', (participant_id,))
+    comprehension_done = c.fetchone() is not None
+
+    # Check if main session was started
+    c.execute('SELECT start_time, submitted FROM teams WHERE team_id = ?', (team_id,))
+    team_row = c.fetchone()
+    main_session_started = team_row and team_row[0] is not None
+    submitted = team_row and team_row[1] == 1
+
+    # Check survey pages
+    c.execute('SELECT id FROM survey_page1 WHERE team_id = ?', (team_id,))
+    survey_page1_done = c.fetchone() is not None
+
+    c.execute('SELECT id FROM survey_page2 WHERE team_id = ?', (team_id,))
+    survey_page2_done = c.fetchone() is not None
+
+    c.execute('SELECT id FROM survey_page3 WHERE team_id = ?', (team_id,))
+    survey_page3_done = c.fetchone() is not None
+
+    conn.close()
+
+    # Determine current stage based on progress
+    stage = 'login'
+    if survey_page3_done:
+        stage = 'completed'
+    elif survey_page2_done:
+        stage = 'survey_page3'
+    elif survey_page1_done:
+        stage = 'survey_page2'
+    elif submitted:
+        stage = 'survey_page1'
+    elif main_session_started:
+        stage = 'main_session'
+    elif comprehension_done:
+        stage = 'main_session'  # They completed comprehension, should go to main session
+    else:
+        stage = 'comprehension'
+
+    return jsonify({
+        'success': True,
+        'stage': stage,
+        'participant_id': participant_id,
+        'team_id': team_id
+    })
 
 @app.route('/api/strategy_description', methods=['POST'])
 def save_strategy_description():
