@@ -164,6 +164,24 @@ def init_db():
     except sqlite3.OperationalError:
         pass  # Column already exists
 
+    # Add current stage tracking for experimenter dashboard
+    try:
+        c.execute('ALTER TABLE teams ADD COLUMN p1_current_stage TEXT DEFAULT "login"')
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+    try:
+        c.execute('ALTER TABLE teams ADD COLUMN p2_current_stage TEXT DEFAULT "login"')
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+    try:
+        c.execute('ALTER TABLE teams ADD COLUMN p1_last_update TIMESTAMP')
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+    try:
+        c.execute('ALTER TABLE teams ADD COLUMN p2_last_update TIMESTAMP')
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+
     conn.commit()
     conn.close()
 
@@ -1705,6 +1723,7 @@ HTML_TEMPLATE = r'''
                 // Proceed to wait screen
                 document.getElementById('comprehensionScreen').classList.remove('active');
                 document.getElementById('waitScreen1').classList.add('active');
+                updateStage('wait_screen');
             }
         }
 
@@ -1829,6 +1848,7 @@ HTML_TEMPLATE = r'''
             document.getElementById('waitScreen1').classList.remove('active');
             document.getElementById('mainContainer').classList.add('active');
             document.getElementById('teamInfo').textContent = `Team: ${teamId} | You: ${participantId}`;
+            updateStage('main_session');
         }
 
 
@@ -1923,6 +1943,23 @@ HTML_TEMPLATE = r'''
             });
         }
 
+        function updateStage(stage) {
+            // Update participant's current stage for experimenter tracking
+            if (!teamId || !participantId) return;
+
+            fetch(API_BASE + '/api/update_stage', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    team_id: teamId,
+                    participant_id: participantId,
+                    stage: stage
+                })
+            }).catch(error => {
+                console.error('Error updating stage:', error);
+            });
+        }
+
         function showInstructions() {
             document.getElementById('mainContainer').classList.remove('active');
             document.getElementById('instructionsScreen').classList.add('active');
@@ -1971,24 +2008,35 @@ HTML_TEMPLATE = r'''
                         if (stage === 'completed') {
                             // Already completed, show thank you screen
                             document.getElementById('thankYouScreen').classList.add('active');
+                            updateStage('completed');
                         } else if (stage === 'survey_page3') {
                             // Resume at survey page 3
                             document.getElementById('surveyPage3').classList.add('active');
+                            updateStage('survey_page3');
                         } else if (stage === 'survey_page2') {
                             // Resume at survey page 2
                             document.getElementById('surveyPage2').classList.add('active');
+                            updateStage('survey_page2');
                         } else if (stage === 'strategy_page') {
                             // Resume at strategy description page
                             document.getElementById('strategyPage').classList.add('active');
+                            updateStage('strategy_page');
                         } else if (stage === 'survey_page1') {
                             // Resume at survey page 1
                             document.getElementById('surveyPage1').classList.add('active');
+                            updateStage('survey_page1');
                         } else if (stage === 'main_session') {
                             // Resume main session - load data and start
                             goToMainSession();
+                            // updateStage called inside goToMainSession
+                        } else if (stage === 'wait_screen') {
+                            // Completed comprehension, waiting to start main session
+                            document.getElementById('waitScreen1').classList.add('active');
+                            updateStage('wait_screen');
                         } else {
                             // Start from comprehension (default for new participants)
                             document.getElementById('comprehensionScreen').classList.add('active');
+                            updateStage('comprehension');
                         }
                     } else {
                         // Error checking progress, start from beginning
@@ -2605,6 +2653,7 @@ HTML_TEMPLATE = r'''
         function goToSurveyPage1() {
             document.getElementById('waitScreen').classList.remove('active');
             document.getElementById('surveyPage1').classList.add('active');
+            updateStage('survey_page1');
         }
 
         function toggleMajorOther() {
@@ -2646,6 +2695,7 @@ HTML_TEMPLATE = r'''
             .then(() => {
                 document.getElementById('surveyPage1').classList.remove('active');
                 document.getElementById('strategyPage').classList.add('active');
+                updateStage('strategy_page');
             });
         }
 
@@ -2692,6 +2742,7 @@ HTML_TEMPLATE = r'''
             .then(() => {
                 document.getElementById('surveyPage2').classList.remove('active');
                 document.getElementById('surveyPage3').classList.add('active');
+                updateStage('survey_page3');
             });
         }
 
@@ -2739,6 +2790,7 @@ HTML_TEMPLATE = r'''
             .then(() => {
                 document.getElementById('surveyPage3').classList.remove('active');
                 document.getElementById('thankYouScreen').classList.add('active');
+                updateStage('completed');
             });
         }
 
@@ -2763,6 +2815,7 @@ HTML_TEMPLATE = r'''
             .then(() => {
                 document.getElementById('strategyPage').classList.remove('active');
                 document.getElementById('surveyPage2').classList.add('active');
+                updateStage('survey_page2');
             });
         }
 
@@ -2779,6 +2832,312 @@ HTML_TEMPLATE = r'''
 @app.route('/')
 def index():
     return render_template_string(HTML_TEMPLATE)
+
+@app.route('/experimenter')
+def experimenter_dashboard():
+    """Experimenter dashboard to track participant progress"""
+    EXPERIMENTER_TEMPLATE = r'''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Experimenter Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .dashboard-container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .dashboard-header {
+            background: white;
+            padding: 30px;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            margin-bottom: 20px;
+        }
+
+        .dashboard-header h1 {
+            color: #667eea;
+            margin-bottom: 10px;
+        }
+
+        .last-refresh {
+            color: #666;
+            font-size: 14px;
+        }
+
+        .teams-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+            gap: 20px;
+        }
+
+        .team-card {
+            background: white;
+            border-radius: 15px;
+            padding: 20px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+
+        .team-header {
+            font-size: 20px;
+            font-weight: 600;
+            color: #667eea;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #e5e7eb;
+        }
+
+        .participant {
+            background: #f9fafb;
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 10px;
+        }
+
+        .participant:last-child {
+            margin-bottom: 0;
+        }
+
+        .participant-id {
+            font-weight: 600;
+            color: #374151;
+            margin-bottom: 8px;
+        }
+
+        .stage-badge {
+            display: inline-block;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: 500;
+            margin-bottom: 5px;
+        }
+
+        .stage-login { background: #dbeafe; color: #1e40af; }
+        .stage-comprehension { background: #fef3c7; color: #92400e; }
+        .stage-wait_screen { background: #fce7f3; color: #9f1239; }
+        .stage-main_session { background: #d1fae5; color: #065f46; }
+        .stage-survey_page1 { background: #e0e7ff; color: #3730a3; }
+        .stage-strategy_page { background: #ddd6fe; color: #5b21b6; }
+        .stage-survey_page2 { background: #fed7aa; color: #9a3412; }
+        .stage-survey_page3 { background: #fecaca; color: #991b1b; }
+        .stage-completed { background: #10b981; color: white; }
+
+        .last-update {
+            font-size: 12px;
+            color: #6b7280;
+        }
+
+        .refresh-btn {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 500;
+            transition: background 0.3s;
+            margin-top: 10px;
+        }
+
+        .refresh-btn:hover {
+            background: #5568d3;
+        }
+
+        .auto-refresh {
+            margin-top: 10px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .auto-refresh input {
+            width: 20px;
+            height: 20px;
+        }
+
+        .auto-refresh label {
+            color: #374151;
+            font-size: 14px;
+        }
+
+        .empty-state {
+            background: white;
+            border-radius: 15px;
+            padding: 60px 20px;
+            text-align: center;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+
+        .empty-state p {
+            color: #6b7280;
+            font-size: 18px;
+        }
+    </style>
+</head>
+<body>
+    <div class="dashboard-container">
+        <div class="dashboard-header">
+            <h1>Experimenter Dashboard</h1>
+            <div class="last-refresh">Last updated: <span id="lastRefresh">--</span></div>
+            <button class="refresh-btn" onclick="loadParticipants()">Refresh Now</button>
+            <div class="auto-refresh">
+                <input type="checkbox" id="autoRefresh" onchange="toggleAutoRefresh()" checked>
+                <label for="autoRefresh">Auto-refresh every 5 seconds</label>
+            </div>
+        </div>
+
+        <div id="teamsContainer"></div>
+    </div>
+
+    <script>
+        let autoRefreshInterval = null;
+
+        function formatStage(stage) {
+            const stageNames = {
+                'login': 'Login',
+                'comprehension': 'Comprehension Questions',
+                'wait_screen': 'Waiting to Start',
+                'main_session': 'Main Session',
+                'survey_page1': 'Survey Page 1',
+                'strategy_page': 'Strategy Description',
+                'survey_page2': 'Survey Page 2',
+                'survey_page3': 'Survey Page 3',
+                'completed': 'Completed ✓'
+            };
+            return stageNames[stage] || stage;
+        }
+
+        function formatTime(timestamp) {
+            if (!timestamp) return 'Never';
+            const date = new Date(timestamp);
+            return date.toLocaleTimeString();
+        }
+
+        function loadParticipants() {
+            fetch('/api/experimenter/participants')
+                .then(response => response.json())
+                .then(data => {
+                    const container = document.getElementById('teamsContainer');
+                    const lastRefresh = document.getElementById('lastRefresh');
+
+                    lastRefresh.textContent = new Date().toLocaleTimeString();
+
+                    if (data.teams.length === 0) {
+                        container.innerHTML = `
+                            <div class="empty-state">
+                                <p>No participants yet. Participants will appear here once they log in.</p>
+                            </div>
+                        `;
+                        return;
+                    }
+
+                    container.innerHTML = '';
+                    container.className = 'teams-grid';
+
+                    data.teams.forEach(team => {
+                        const teamCard = document.createElement('div');
+                        teamCard.className = 'team-card';
+
+                        let participantsHTML = '';
+                        [team.p1, team.p2].forEach((p, index) => {
+                            if (p) {
+                                const participantNum = index + 1;
+                                participantsHTML += `
+                                    <div class="participant">
+                                        <div class="participant-id">Participant ${participantNum}</div>
+                                        <div class="stage-badge stage-${p.stage}">${formatStage(p.stage)}</div>
+                                        <div class="last-update">Last update: ${formatTime(p.last_update)}</div>
+                                    </div>
+                                `;
+                            }
+                        });
+
+                        teamCard.innerHTML = `
+                            <div class="team-header">Team ${team.team_id}</div>
+                            ${participantsHTML}
+                        `;
+
+                        container.appendChild(teamCard);
+                    });
+                })
+                .catch(error => {
+                    console.error('Error loading participants:', error);
+                });
+        }
+
+        function toggleAutoRefresh() {
+            const enabled = document.getElementById('autoRefresh').checked;
+
+            if (enabled) {
+                loadParticipants(); // Load immediately
+                autoRefreshInterval = setInterval(loadParticipants, 5000);
+            } else {
+                if (autoRefreshInterval) {
+                    clearInterval(autoRefreshInterval);
+                    autoRefreshInterval = null;
+                }
+            }
+        }
+
+        // Load on page load
+        loadParticipants();
+        toggleAutoRefresh(); // Start auto-refresh
+    </script>
+</body>
+</html>
+    '''
+    return render_template_string(EXPERIMENTER_TEMPLATE)
+
+@app.route('/api/experimenter/participants', methods=['GET'])
+def get_all_participants():
+    """Get all participants and their current stages for experimenter dashboard"""
+    conn = sqlite3.connect('study_data.db')
+    c = conn.cursor()
+
+    # Get all teams with participant stage data
+    c.execute('''
+        SELECT team_id,
+               p1_current_stage, p1_last_update,
+               p2_current_stage, p2_last_update
+        FROM teams
+        ORDER BY team_id
+    ''')
+    rows = c.fetchall()
+    conn.close()
+
+    teams = []
+    for row in rows:
+        team_data = {
+            'team_id': row[0],
+            'p1': {
+                'stage': row[1] or 'login',
+                'last_update': row[2]
+            } if row[1] or row[2] else None,
+            'p2': {
+                'stage': row[3] or 'login',
+                'last_update': row[4]
+            } if row[3] or row[4] else None
+        }
+        teams.append(team_data)
+
+    return jsonify({'teams': teams})
 
 @app.route('/api/start_session', methods=['POST'])
 def start_session():
@@ -3079,6 +3438,34 @@ def heartbeat():
 
     return jsonify({'success': True})
 
+@app.route('/api/update_stage', methods=['POST'])
+def update_stage():
+    """Update participant's current stage for experimenter tracking"""
+    data = request.json
+    team_id = data.get('team_id')
+    participant_id = data.get('participant_id')
+    stage = data.get('stage')
+
+    if not all([team_id, participant_id, stage]):
+        return jsonify({'error': 'Team ID, Participant ID, and stage required'}), 400
+
+    # Validate participant_id
+    if participant_id not in ['1', '2']:
+        return jsonify({'error': 'Invalid participant_id'}), 400
+
+    # Update database (single source of truth for multiple workers)
+    conn = sqlite3.connect('study_data.db')
+    c = conn.cursor()
+
+    # Determine which columns to update based on participant_id
+    stage_column = f'p{participant_id}_current_stage'
+    update_column = f'p{participant_id}_last_update'
+    c.execute(f'UPDATE teams SET {stage_column} = ?, {update_column} = CURRENT_TIMESTAMP WHERE team_id = ?', (stage, team_id))
+    conn.commit()
+    conn.close()
+
+    return jsonify({'success': True})
+
 @app.route('/api/typing_metrics', methods=['POST'])
 def update_typing_metrics():
     data = request.json
@@ -3280,7 +3667,7 @@ def get_typing_metrics(team_id, participant_id):
 def check_progress(team_id, participant_id):
     """
     Check participant progress and return current stage for auto-resume functionality.
-    Stages: login, comprehension, main_session, survey_page1, strategy_page, survey_page2, survey_page3, completed
+    Stages: login, comprehension, wait_screen, main_session, survey_page1, strategy_page, survey_page2, survey_page3, completed
     """
     if not team_id or not participant_id:
         return jsonify({'error': 'Team ID and Participant ID required'}), 400
@@ -3329,11 +3716,14 @@ def check_progress(team_id, participant_id):
         stage = 'strategy_page'
     elif submitted:
         stage = 'survey_page1'
-    elif main_session_started:
+    elif comprehension_done and main_session_started:
+        # This participant completed comprehension AND session was started
         stage = 'main_session'
     elif comprehension_done:
-        stage = 'main_session'  # They completed comprehension, should go to main session
+        # Completed comprehension but session not started yet - show wait screen
+        stage = 'wait_screen'
     else:
+        # Haven't completed comprehension yet
         stage = 'comprehension'
 
     return jsonify({
