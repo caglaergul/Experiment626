@@ -1300,6 +1300,7 @@ HTML_TEMPLATE = r'''
                         </div>
                     </div>
                 </div>
+                <div class="team-info" id="teamInfo" style="font-size: 14px; color: #666;"></div>
             </div>
             <div class="ideas-section">
                 <div class="ideas-header">Possible Ideas</div>
@@ -1349,6 +1350,13 @@ HTML_TEMPLATE = r'''
                 <button class="submit-btn" id="submitBtn" onclick="submitFinal()" disabled>Submit Final Idea</button>
             </div>
         </div>
+    </div>
+
+    <!-- Hidden elements for JavaScript compatibility -->
+    <div style="display: none;">
+        <div id="messages"></div>
+        <div id="typingIndicator"></div>
+        <input type="text" id="messageInput">
     </div>
 
     <!-- Wait Screen -->
