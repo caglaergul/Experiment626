@@ -3111,17 +3111,41 @@ def get_all_participants():
     conn = sqlite3.connect('study_data.db')
     c = conn.cursor()
 
-    # Get all teams with heartbeat data
-    c.execute('SELECT team_id, start_time, submitted, p1_last_heartbeat, p2_last_heartbeat FROM teams ORDER BY team_id')
-    team_rows = c.fetchall()
+    # Get all unique team_ids from all tables (teams, comprehension, surveys)
+    c.execute('''
+        SELECT DISTINCT team_id FROM (
+            SELECT team_id FROM teams
+            UNION
+            SELECT team_id FROM comprehension_attempts
+            UNION
+            SELECT team_id FROM survey_page1
+            UNION
+            SELECT team_id FROM survey_page2
+            UNION
+            SELECT team_id FROM survey_page3
+            UNION
+            SELECT team_id FROM strategy_descriptions
+        ) ORDER BY team_id
+    ''')
+    all_team_ids = [row[0] for row in c.fetchall()]
 
     teams = []
-    for team_row in team_rows:
-        team_id = team_row[0]
-        main_session_started = team_row[1] is not None
-        submitted = team_row[2] == 1
-        p1_heartbeat = team_row[3]
-        p2_heartbeat = team_row[4]
+    for team_id in all_team_ids:
+        # Get team data if it exists
+        c.execute('SELECT start_time, submitted, p1_last_heartbeat, p2_last_heartbeat FROM teams WHERE team_id = ?', (team_id,))
+        team_row = c.fetchone()
+
+        if team_row:
+            main_session_started = team_row[0] is not None
+            submitted = team_row[1] == 1
+            p1_heartbeat = team_row[2]
+            p2_heartbeat = team_row[3]
+        else:
+            # Team doesn't exist in teams table yet (only in comprehension/survey tables)
+            main_session_started = False
+            submitted = False
+            p1_heartbeat = None
+            p2_heartbeat = None
 
         team_data = {
             'team_id': team_id,
