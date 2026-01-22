@@ -15,9 +15,34 @@ CORS(app)
 # IMPORTANT: Set your OpenAI API key as environment variable
 openai.api_key = os.getenv('OPENAI_API_KEY', 'your-api-key-here')
 
+# Use absolute path for database to work with multiple workers on PythonAnywhere
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'study_data.db')
+
+def get_db():
+    """Get database connection with absolute path"""
+    return sqlite3.connect(DB_PATH)
+
+def ensure_progress_table():
+    """Ensure participant_progress table exists - call this before any progress operations"""
+    conn = get_db()
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS participant_progress (
+            team_id TEXT NOT NULL,
+            participant_id TEXT NOT NULL,
+            current_screen TEXT DEFAULT 'login',
+            comprehension_answers TEXT DEFAULT '{}',
+            comprehension_attempts TEXT DEFAULT '{}',
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (team_id, participant_id)
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
 # Database setup
 def init_db():
-    conn = sqlite3.connect('study_data.db')
+    conn = get_db()
     c = conn.cursor()
     c.execute('''
         CREATE TABLE IF NOT EXISTS teams (
@@ -2941,7 +2966,7 @@ def start_session():
     if not team_id or not participant_id:
         return jsonify({'error': 'Team ID and Participant ID required'}), 400
     
-    conn = sqlite3.connect('study_data.db')
+    conn = get_db()
     c = conn.cursor()
     try:
         c.execute('INSERT INTO teams (team_id) VALUES (?)', (team_id,))
@@ -2958,7 +2983,7 @@ def start_session():
 @app.route('/api/messages/<team_id>', methods=['GET'])
 def get_messages(team_id):
     since_id = request.args.get('since', 0, type=int)
-    conn = sqlite3.connect('study_data.db')
+    conn = get_db()
     c = conn.cursor()
     c.execute('''
         SELECT id, role, content, participant_id, timestamp
@@ -2986,7 +3011,7 @@ def chat():
     team_session = active_teams[team_id]
     team_session['messages'].append({'role': 'user', 'content': user_message})
     
-    conn = sqlite3.connect('study_data.db')
+    conn = get_db()
     c = conn.cursor()
     c.execute('INSERT INTO messages (team_id, participant_id, role, content) VALUES (?, ?, ?, ?)',
               (team_id, participant_id, 'user', user_message))
@@ -3006,7 +3031,7 @@ def chat():
         
         team_session['messages'].append({'role': 'assistant', 'content': assistant_message})
         
-        conn = sqlite3.connect('study_data.db')
+        conn = get_db()
         c = conn.cursor()
         c.execute('INSERT INTO messages (team_id, participant_id, role, content, tokens_used) VALUES (?, ?, ?, ?, ?)',
                   (team_id, None, 'assistant', assistant_message, tokens_used))
@@ -3020,7 +3045,7 @@ def chat():
 @app.route('/api/ideas/<team_id>', methods=['GET'])
 def get_ideas(team_id):
     since_id = request.args.get('since', 0, type=int)
-    conn = sqlite3.connect('study_data.db')
+    conn = get_db()
     c = conn.cursor()
     c.execute('''
         SELECT id, participant_id, idea_text, timestamp
@@ -3042,7 +3067,7 @@ def add_idea():
     if not all([team_id, participant_id, idea_text]):
         return jsonify({'error': 'Missing required fields'}), 400
     
-    conn = sqlite3.connect('study_data.db')
+    conn = get_db()
     c = conn.cursor()
     c.execute('INSERT INTO ideas (team_id, participant_id, idea_text) VALUES (?, ?, ?)',
               (team_id, participant_id, idea_text))
@@ -3055,7 +3080,7 @@ def add_idea():
 def get_final_idea(team_id):
     # Always read from database to support multiple worker processes
     # This also enables real-time collaboration between team members
-    conn = sqlite3.connect('study_data.db')
+    conn = get_db()
     c = conn.cursor()
     c.execute('SELECT final_idea FROM teams WHERE team_id = ?', (team_id,))
     row = c.fetchone()
@@ -3092,7 +3117,7 @@ def update_final():
     # Update database (single source of truth for multiple workers)
     # This ensures real-time collaboration between team members across all workers
     final_idea_combined = f"Title: {title}\n\nDescription: {description}"
-    conn = sqlite3.connect('study_data.db')
+    conn = get_db()
     c = conn.cursor()
     c.execute('UPDATE teams SET final_idea = ? WHERE team_id = ?', (final_idea_combined, team_id))
     conn.commit()
@@ -3109,7 +3134,7 @@ def submit():
     if not team_id or not final_idea:
         return jsonify({'error': 'Team ID and final idea required'}), 400
     
-    conn = sqlite3.connect('study_data.db')
+    conn = get_db()
     c = conn.cursor()
     c.execute('''
         UPDATE teams 
@@ -3132,7 +3157,7 @@ def set_approval():
         return jsonify({'error': 'Team ID and Participant ID required'}), 400
 
     # Update database (single source of truth for multiple workers)
-    conn = sqlite3.connect('study_data.db')
+    conn = get_db()
     c = conn.cursor()
 
     # Determine which column to update based on participant_id
@@ -3154,7 +3179,7 @@ def set_approval():
 @app.route('/api/get_approvals/<team_id>', methods=['GET'])
 def get_approvals(team_id):
     # Always read from database to support multiple worker processes
-    conn = sqlite3.connect('study_data.db')
+    conn = get_db()
     c = conn.cursor()
     c.execute('SELECT p1_approved, p2_approved, submitted FROM teams WHERE team_id = ?', (team_id,))
     row = c.fetchone()
@@ -3174,7 +3199,7 @@ def get_approvals(team_id):
 
 @app.route('/api/export/<team_id>', methods=['GET'])
 def export_team_data(team_id):
-    conn = sqlite3.connect('study_data.db')
+    conn = get_db()
     c = conn.cursor()
     
     # Get all data for the team
@@ -3231,7 +3256,7 @@ def heartbeat():
         return jsonify({'error': 'Team ID and Participant ID required'}), 400
 
     # Update database (single source of truth for multiple workers)
-    conn = sqlite3.connect('study_data.db')
+    conn = get_db()
     c = conn.cursor()
 
     # Determine which column to update based on participant_id
@@ -3328,7 +3353,7 @@ def update_typing_metrics():
     p_cols = participant_field_columns[(participant_id, field)]
     agg_cols = aggregate_field_columns[field]
     
-    conn = sqlite3.connect('study_data.db')
+    conn = get_db()
     c = conn.cursor()
     
     # Update participant-specific metrics with hardcoded column names (safe from SQL injection)
@@ -3384,7 +3409,7 @@ def update_typing_metrics():
 @app.route('/api/online_status/<team_id>', methods=['GET'])
 def get_online_status(team_id):
     # Always read from database to support multiple worker processes
-    conn = sqlite3.connect('study_data.db')
+    conn = get_db()
     c = conn.cursor()
     c.execute('SELECT p1_last_heartbeat, p2_last_heartbeat FROM teams WHERE team_id = ?', (team_id,))
     row = c.fetchone()
@@ -3412,7 +3437,7 @@ def get_online_status(team_id):
 
 @app.route('/api/get_timer/<team_id>', methods=['GET'])
 def get_timer(team_id):
-    conn = sqlite3.connect('study_data.db')
+    conn = get_db()
     c = conn.cursor()
     c.execute('SELECT start_time FROM teams WHERE team_id = ?', (team_id,))
     row = c.fetchone()
@@ -3451,7 +3476,7 @@ def save_survey_page1():
         if data.get(q_key) not in allowed_responses:
             return jsonify({'error': f'Invalid response for {q_key}'}), 400
     
-    conn = sqlite3.connect('study_data.db')
+    conn = get_db()
     c = conn.cursor()
     c.execute('''
         INSERT INTO survey_page1 (team_id, participant_id, q1, q2, q3, q4, q5, q6, q7, q8, q9, q10)
@@ -3506,7 +3531,7 @@ def save_survey_page2():
     if gender not in valid_genders:
         return jsonify({'error': 'Invalid gender'}), 400
     
-    conn = sqlite3.connect('study_data.db')
+    conn = get_db()
     c = conn.cursor()
     c.execute('''
         INSERT INTO survey_page2 (team_id, participant_id, employment_status, major_field, major_other, age, gender)
@@ -3544,7 +3569,7 @@ def save_survey_page3():
     if len(postal_code) != 5 or not postal_code.isdigit():
         return jsonify({'error': 'Postal code must be exactly 5 digits'}), 400
     
-    conn = sqlite3.connect('study_data.db')
+    conn = get_db()
     c = conn.cursor()
     c.execute('''
         INSERT INTO survey_page3 (team_id, participant_id, first_last_name, address_line1, address_line2, city, state, postal_code)
@@ -3571,7 +3596,7 @@ def save_comprehension_attempts():
     if not team_id or not participant_id:
         return jsonify({'error': 'Team ID and Participant ID required'}), 400
 
-    conn = sqlite3.connect('study_data.db')
+    conn = get_db()
     c = conn.cursor()
     c.execute('''
         INSERT INTO comprehension_attempts
@@ -3597,7 +3622,7 @@ def save_strategy_description():
     if participant_id not in ['1', '2']:
         return jsonify({'error': 'Invalid participant_id'}), 400
 
-    conn = sqlite3.connect('study_data.db')
+    conn = get_db()
     c = conn.cursor()
     c.execute('''
         INSERT INTO strategy_descriptions (team_id, participant_id, strategy_description)
@@ -3614,82 +3639,90 @@ def get_progress(team_id, participant_id):
     if participant_id not in ['1', '2']:
         return jsonify({'error': 'Invalid participant_id'}), 400
 
-    conn = sqlite3.connect('study_data.db')
-    c = conn.cursor()
+    try:
+        # Ensure table exists
+        ensure_progress_table()
 
-    # Get progress from participant_progress table
-    c.execute('''
-        SELECT current_screen, comprehension_answers, comprehension_attempts
-        FROM participant_progress
-        WHERE team_id = ? AND participant_id = ?
-    ''', (team_id, participant_id))
-    progress_row = c.fetchone()
+        conn = get_db()
+        c = conn.cursor()
 
-    # Check if team exists and has started
-    c.execute('SELECT start_time, submitted FROM teams WHERE team_id = ?', (team_id,))
-    team_row = c.fetchone()
+        # Get progress from participant_progress table
+        c.execute('''
+            SELECT current_screen, comprehension_answers, comprehension_attempts
+            FROM participant_progress
+            WHERE team_id = ? AND participant_id = ?
+        ''', (team_id, participant_id))
+        progress_row = c.fetchone()
 
-    # Get typing metrics for this participant
-    c.execute(f'''
-        SELECT p{participant_id}_title_keystroke_count,
-               p{participant_id}_title_active_typing_seconds,
-               p{participant_id}_title_first_edit_time,
-               p{participant_id}_title_last_edit_time,
-               p{participant_id}_description_keystroke_count,
-               p{participant_id}_description_active_typing_seconds,
-               p{participant_id}_description_first_edit_time,
-               p{participant_id}_description_last_edit_time
-        FROM teams WHERE team_id = ?
-    ''', (team_id,))
-    metrics_row = c.fetchone()
+        # Check if team exists and has started
+        c.execute('SELECT start_time, submitted FROM teams WHERE team_id = ?', (team_id,))
+        team_row = c.fetchone()
 
-    # Check survey completion status
-    c.execute('SELECT id FROM survey_page1 WHERE team_id = ? AND participant_id = ?', (team_id, participant_id))
-    survey1_completed = c.fetchone() is not None
+        # Get typing metrics for this participant
+        metrics_row = None
+        if team_row:
+            c.execute(f'''
+                SELECT p{participant_id}_title_keystroke_count,
+                       p{participant_id}_title_active_typing_seconds,
+                       p{participant_id}_title_first_edit_time,
+                       p{participant_id}_title_last_edit_time,
+                       p{participant_id}_description_keystroke_count,
+                       p{participant_id}_description_active_typing_seconds,
+                       p{participant_id}_description_first_edit_time,
+                       p{participant_id}_description_last_edit_time
+                FROM teams WHERE team_id = ?
+            ''', (team_id,))
+            metrics_row = c.fetchone()
 
-    c.execute('SELECT id FROM strategy_descriptions WHERE team_id = ? AND participant_id = ?', (team_id, participant_id))
-    strategy_completed = c.fetchone() is not None
+        # Check survey completion status
+        c.execute('SELECT id FROM survey_page1 WHERE team_id = ? AND participant_id = ?', (team_id, participant_id))
+        survey1_completed = c.fetchone() is not None
 
-    c.execute('SELECT id FROM survey_page2 WHERE team_id = ? AND participant_id = ?', (team_id, participant_id))
-    survey2_completed = c.fetchone() is not None
+        c.execute('SELECT id FROM strategy_descriptions WHERE team_id = ? AND participant_id = ?', (team_id, participant_id))
+        strategy_completed = c.fetchone() is not None
 
-    c.execute('SELECT id FROM survey_page3 WHERE team_id = ? AND participant_id = ?', (team_id, participant_id))
-    survey3_completed = c.fetchone() is not None
+        c.execute('SELECT id FROM survey_page2 WHERE team_id = ? AND participant_id = ?', (team_id, participant_id))
+        survey2_completed = c.fetchone() is not None
 
-    c.execute('SELECT id FROM comprehension_attempts WHERE team_id = ? AND participant_id = ?', (team_id, participant_id))
-    comprehension_saved = c.fetchone() is not None
+        c.execute('SELECT id FROM survey_page3 WHERE team_id = ? AND participant_id = ?', (team_id, participant_id))
+        survey3_completed = c.fetchone() is not None
 
-    conn.close()
+        c.execute('SELECT id FROM comprehension_attempts WHERE team_id = ? AND participant_id = ?', (team_id, participant_id))
+        comprehension_saved = c.fetchone() is not None
 
-    result = {
-        'has_progress': progress_row is not None,
-        'current_screen': progress_row[0] if progress_row else 'login',
-        'comprehension_answers': json.loads(progress_row[1]) if progress_row and progress_row[1] else {},
-        'comprehension_attempts': json.loads(progress_row[2]) if progress_row and progress_row[2] else {},
-        'team_started': team_row is not None and team_row[0] is not None,
-        'submitted': team_row[1] if team_row else False,
-        'survey1_completed': survey1_completed,
-        'strategy_completed': strategy_completed,
-        'survey2_completed': survey2_completed,
-        'survey3_completed': survey3_completed,
-        'comprehension_saved': comprehension_saved,
-        'typing_metrics': {
-            'title': {
-                'keystrokeCount': metrics_row[0] or 0 if metrics_row else 0,
-                'activeTypingSeconds': metrics_row[1] or 0 if metrics_row else 0,
-                'firstEditTime': metrics_row[2] if metrics_row else None,
-                'lastEditTime': metrics_row[3] if metrics_row else None
-            },
-            'description': {
-                'keystrokeCount': metrics_row[4] or 0 if metrics_row else 0,
-                'activeTypingSeconds': metrics_row[5] or 0 if metrics_row else 0,
-                'firstEditTime': metrics_row[6] if metrics_row else None,
-                'lastEditTime': metrics_row[7] if metrics_row else None
-            }
-        } if metrics_row else None
-    }
+        conn.close()
 
-    return jsonify(result)
+        result = {
+            'has_progress': progress_row is not None,
+            'current_screen': progress_row[0] if progress_row else 'login',
+            'comprehension_answers': json.loads(progress_row[1]) if progress_row and progress_row[1] else {},
+            'comprehension_attempts': json.loads(progress_row[2]) if progress_row and progress_row[2] else {},
+            'team_started': team_row is not None and team_row[0] is not None,
+            'submitted': bool(team_row[1]) if team_row else False,
+            'survey1_completed': survey1_completed,
+            'strategy_completed': strategy_completed,
+            'survey2_completed': survey2_completed,
+            'survey3_completed': survey3_completed,
+            'comprehension_saved': comprehension_saved,
+            'typing_metrics': {
+                'title': {
+                    'keystrokeCount': metrics_row[0] or 0 if metrics_row else 0,
+                    'activeTypingSeconds': metrics_row[1] or 0 if metrics_row else 0,
+                    'firstEditTime': metrics_row[2] if metrics_row else None,
+                    'lastEditTime': metrics_row[3] if metrics_row else None
+                },
+                'description': {
+                    'keystrokeCount': metrics_row[4] or 0 if metrics_row else 0,
+                    'activeTypingSeconds': metrics_row[5] or 0 if metrics_row else 0,
+                    'firstEditTime': metrics_row[6] if metrics_row else None,
+                    'lastEditTime': metrics_row[7] if metrics_row else None
+                }
+            } if metrics_row else None
+        }
+
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': str(e), 'has_progress': False}), 500
 
 @app.route('/api/save_progress', methods=['POST'])
 def save_progress():
@@ -3713,20 +3746,26 @@ def save_progress():
     if current_screen not in valid_screens:
         return jsonify({'error': 'Invalid screen'}), 400
 
-    conn = sqlite3.connect('study_data.db')
-    c = conn.cursor()
+    try:
+        # Ensure table exists before inserting
+        ensure_progress_table()
 
-    # Use INSERT OR REPLACE for SQLite compatibility
-    c.execute('''
-        INSERT OR REPLACE INTO participant_progress
-        (team_id, participant_id, current_screen, comprehension_answers, comprehension_attempts, timestamp)
-        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-    ''', (team_id, participant_id, current_screen, json.dumps(comprehension_answers), json.dumps(comprehension_attempts)))
+        conn = get_db()
+        c = conn.cursor()
 
-    conn.commit()
-    conn.close()
+        # Use INSERT OR REPLACE for SQLite compatibility
+        c.execute('''
+            INSERT OR REPLACE INTO participant_progress
+            (team_id, participant_id, current_screen, comprehension_answers, comprehension_attempts, timestamp)
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ''', (team_id, participant_id, current_screen, json.dumps(comprehension_answers), json.dumps(comprehension_attempts)))
 
-    return jsonify({'success': True, 'saved_screen': current_screen})
+        conn.commit()
+        conn.close()
+
+        return jsonify({'success': True, 'saved_screen': current_screen})
+    except Exception as e:
+        return jsonify({'error': str(e), 'success': False}), 500
 
 if __name__ == '__main__':
     app.run(debug=True)
