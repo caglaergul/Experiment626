@@ -2330,6 +2330,12 @@ HTML_TEMPLATE = r'''
             });
         }, 1000);
 
+        // Save typing metrics before page closes/refreshes
+        window.addEventListener('beforeunload', function() {
+            endTypingSession('title');
+            endTypingSession('description');
+        });
+
         document.getElementById('finalTitle').addEventListener('keydown', function(e) {
             // Track all keystrokes including backspace, delete, etc.
             if (e.key.length === 1 || e.key === 'Backspace' || e.key === 'Delete') {
