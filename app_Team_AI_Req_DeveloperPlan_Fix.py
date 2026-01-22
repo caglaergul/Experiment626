@@ -1756,6 +1756,38 @@ HTML_TEMPLATE = r'''
             });
         }
 
+        function loadTypingMetrics() {
+            // Load existing typing metrics from database to support resuming after refresh
+            fetch(API_BASE + `/api/typing_metrics/${teamId}/${participantId}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        // Initialize all title metrics from database
+                        typingMetrics.title.keystrokeCount = data.title_keystroke_count || 0;
+                        typingMetrics.title.activeTypingSeconds = data.title_active_typing_seconds || 0;
+                        typingMetrics.title.firstEditTime = data.title_first_edit_time || null;
+                        typingMetrics.title.lastEditTime = data.title_last_edit_time || null;
+
+                        // Initialize all description metrics from database
+                        typingMetrics.description.keystrokeCount = data.description_keystroke_count || 0;
+                        typingMetrics.description.activeTypingSeconds = data.description_active_typing_seconds || 0;
+                        typingMetrics.description.firstEditTime = data.description_first_edit_time || null;
+                        typingMetrics.description.lastEditTime = data.description_last_edit_time || null;
+
+                        console.log('[Typing Metrics Loaded] P' + participantId,
+                                    'Title - keystrokes:', typingMetrics.title.keystrokeCount,
+                                    'seconds:', typingMetrics.title.activeTypingSeconds,
+                                    'first edit:', typingMetrics.title.firstEditTime,
+                                    'Description - keystrokes:', typingMetrics.description.keystrokeCount,
+                                    'seconds:', typingMetrics.description.activeTypingSeconds,
+                                    'first edit:', typingMetrics.description.firstEditTime);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error loading typing metrics:', error);
+                });
+        }
+
         function goToMainSession() {
             // Start the session and timer NOW
             fetch(API_BASE + '/api/start_session', {
@@ -1769,14 +1801,15 @@ HTML_TEMPLATE = r'''
                 const otherParticipant = participantId === '1' ? '2' : '1';
                 const otherCheckbox = document.getElementById(`approval${otherParticipant}`);
                 const otherContainer = document.getElementById(`approval${otherParticipant}Container`);
-                
+
                 otherCheckbox.disabled = true;
                 otherContainer.classList.add('disabled');
-                
+
                 loadMessages();
                 loadIdeas();
                 loadFinalIdea();
                 loadApprovals();
+                loadTypingMetrics();  // Load existing typing metrics to preserve keystroke counts
                 
                 // Start timer and online status updates
                 startTimer();
@@ -1903,7 +1936,7 @@ HTML_TEMPLATE = r'''
         function startStudy() {
             const teamInput = document.getElementById('teamId').value.trim();
             const participantInput = document.getElementById('participantId').value.trim();
-            
+
             if (!teamInput || !participantInput) {
                 alert('Please enter both Team ID and Participant ID');
                 return;
@@ -1924,9 +1957,52 @@ HTML_TEMPLATE = r'''
             teamId = teamInput;
             participantId = participantInput;
 
-            // Go to comprehension screen instead of main session
-            document.getElementById('loginScreen').style.display = 'none';
-            document.getElementById('comprehensionScreen').classList.add('active');
+            // Check progress and auto-resume if participant has previous progress
+            fetch(API_BASE + `/api/check_progress/${teamId}/${participantId}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        const stage = data.stage;
+
+                        // Hide login screen
+                        document.getElementById('loginScreen').style.display = 'none';
+
+                        // Redirect to appropriate stage
+                        if (stage === 'completed') {
+                            // Already completed, show thank you screen
+                            document.getElementById('thankYouScreen').classList.add('active');
+                        } else if (stage === 'survey_page3') {
+                            // Resume at survey page 3
+                            document.getElementById('surveyPage3').classList.add('active');
+                        } else if (stage === 'survey_page2') {
+                            // Resume at survey page 2
+                            document.getElementById('surveyPage2').classList.add('active');
+                        } else if (stage === 'strategy_page') {
+                            // Resume at strategy description page
+                            document.getElementById('strategyPage').classList.add('active');
+                        } else if (stage === 'survey_page1') {
+                            // Resume at survey page 1
+                            document.getElementById('surveyPage1').classList.add('active');
+                        } else if (stage === 'main_session') {
+                            // Resume main session - load data and start
+                            goToMainSession();
+                        } else {
+                            // Start from comprehension (default for new participants)
+                            document.getElementById('comprehensionScreen').classList.add('active');
+                        }
+                    } else {
+                        // Error checking progress, start from beginning
+                        console.error('Error checking progress:', data.error);
+                        document.getElementById('loginScreen').style.display = 'none';
+                        document.getElementById('comprehensionScreen').classList.add('active');
+                    }
+                })
+                .catch(error => {
+                    // Network error or other issue, start from beginning
+                    console.error('Error checking progress:', error);
+                    document.getElementById('loginScreen').style.display = 'none';
+                    document.getElementById('comprehensionScreen').classList.add('active');
+                });
         }
 
         function loadMessages() {
@@ -3141,6 +3217,131 @@ def update_typing_metrics():
     conn.close()
     
     return jsonify({'success': True})
+
+@app.route('/api/typing_metrics/<team_id>/<participant_id>', methods=['GET'])
+def get_typing_metrics(team_id, participant_id):
+    """
+    Retrieve current typing metrics for a participant to support resuming after refresh
+    """
+    if not team_id or not participant_id:
+        return jsonify({'error': 'Team ID and Participant ID required'}), 400
+
+    # Validate participant_id
+    if participant_id not in ['1', '2']:
+        return jsonify({'error': 'Invalid participant_id'}), 400
+
+    conn = sqlite3.connect('study_data.db')
+    c = conn.cursor()
+
+    # Get participant-specific metrics
+    if participant_id == '1':
+        c.execute('''
+            SELECT p1_title_keystroke_count, p1_title_active_typing_seconds, p1_title_first_edit_time, p1_title_last_edit_time,
+                   p1_description_keystroke_count, p1_description_active_typing_seconds, p1_description_first_edit_time, p1_description_last_edit_time
+            FROM teams WHERE team_id = ?
+        ''', (team_id,))
+    else:  # participant_id == '2'
+        c.execute('''
+            SELECT p2_title_keystroke_count, p2_title_active_typing_seconds, p2_title_first_edit_time, p2_title_last_edit_time,
+                   p2_description_keystroke_count, p2_description_active_typing_seconds, p2_description_first_edit_time, p2_description_last_edit_time
+            FROM teams WHERE team_id = ?
+        ''', (team_id,))
+
+    row = c.fetchone()
+    conn.close()
+
+    if row:
+        return jsonify({
+            'success': True,
+            'title_keystroke_count': row[0] or 0,
+            'title_active_typing_seconds': row[1] or 0,
+            'title_first_edit_time': row[2],
+            'title_last_edit_time': row[3],
+            'description_keystroke_count': row[4] or 0,
+            'description_active_typing_seconds': row[5] or 0,
+            'description_first_edit_time': row[6],
+            'description_last_edit_time': row[7]
+        })
+    else:
+        # Team doesn't exist yet, return zeros/nulls
+        return jsonify({
+            'success': True,
+            'title_keystroke_count': 0,
+            'title_active_typing_seconds': 0,
+            'title_first_edit_time': None,
+            'title_last_edit_time': None,
+            'description_keystroke_count': 0,
+            'description_active_typing_seconds': 0,
+            'description_first_edit_time': None,
+            'description_last_edit_time': None
+        })
+
+@app.route('/api/check_progress/<team_id>/<participant_id>', methods=['GET'])
+def check_progress(team_id, participant_id):
+    """
+    Check participant progress and return current stage for auto-resume functionality.
+    Stages: login, comprehension, main_session, survey_page1, strategy_page, survey_page2, survey_page3, completed
+    """
+    if not team_id or not participant_id:
+        return jsonify({'error': 'Team ID and Participant ID required'}), 400
+
+    # Validate participant_id
+    if participant_id not in ['1', '2']:
+        return jsonify({'error': 'Invalid participant_id'}), 400
+
+    conn = sqlite3.connect('study_data.db')
+    c = conn.cursor()
+
+    # Check if comprehension was completed for this participant
+    c.execute('SELECT id FROM comprehension_attempts WHERE team_id = ? AND participant_id = ?', (team_id, participant_id))
+    comprehension_done = c.fetchone() is not None
+
+    # Check if main session was started
+    c.execute('SELECT start_time, submitted FROM teams WHERE team_id = ?', (team_id,))
+    team_row = c.fetchone()
+    main_session_started = team_row and team_row[0] is not None
+    submitted = team_row and team_row[1] == 1
+
+    # Check survey pages for this participant
+    c.execute('SELECT id FROM survey_page1 WHERE team_id = ? AND participant_id = ?', (team_id, participant_id))
+    survey_page1_done = c.fetchone() is not None
+
+    c.execute('SELECT id FROM strategy_descriptions WHERE team_id = ? AND participant_id = ?', (team_id, participant_id))
+    strategy_description_done = c.fetchone() is not None
+
+    c.execute('SELECT id FROM survey_page2 WHERE team_id = ? AND participant_id = ?', (team_id, participant_id))
+    survey_page2_done = c.fetchone() is not None
+
+    c.execute('SELECT id FROM survey_page3 WHERE team_id = ? AND participant_id = ?', (team_id, participant_id))
+    survey_page3_done = c.fetchone() is not None
+
+    conn.close()
+
+    # Determine current stage based on progress
+    stage = 'login'
+    if survey_page3_done:
+        stage = 'completed'
+    elif survey_page2_done:
+        stage = 'survey_page3'
+    elif strategy_description_done:
+        stage = 'survey_page2'
+    elif survey_page1_done:
+        stage = 'strategy_page'
+    elif submitted:
+        stage = 'survey_page1'
+    elif main_session_started:
+        stage = 'main_session'
+    elif comprehension_done:
+        stage = 'main_session'  # They completed comprehension, should go to main session
+    else:
+        stage = 'comprehension'
+
+    return jsonify({
+        'success': True,
+        'stage': stage,
+        'team_id': team_id,
+        'participant_id': participant_id
+    })
 
 @app.route('/api/online_status/<team_id>', methods=['GET'])
 def get_online_status(team_id):
