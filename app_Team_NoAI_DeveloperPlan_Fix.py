@@ -2817,22 +2817,27 @@ def start_session():
     data = request.json
     team_id = data.get('team_id')
     participant_id = data.get('participant_id')
-    
+
     if not team_id or not participant_id:
         return jsonify({'error': 'Team ID and Participant ID required'}), 400
-    
+
     conn = sqlite3.connect('study_data.db')
     c = conn.cursor()
+
+    # Ensure team exists (with start_time = NULL so we can set it later)
     try:
-        c.execute('INSERT INTO teams (team_id) VALUES (?)', (team_id,))
-        conn.commit()
+        c.execute('INSERT INTO teams (team_id, start_time) VALUES (?, NULL)', (team_id,))
     except sqlite3.IntegrityError:
-        pass
+        pass  # Team already exists
+
+    # Set start_time to now ONLY if it hasn't been set yet (preserves timer on resume)
+    c.execute('UPDATE teams SET start_time = CURRENT_TIMESTAMP WHERE team_id = ? AND start_time IS NULL', (team_id,))
+    conn.commit()
     conn.close()
-    
+
     if team_id not in active_teams:
         active_teams[team_id] = {'messages': []}
-    
+
     return jsonify({'success': True, 'team_id': team_id, 'participant_id': participant_id})
 
 @app.route('/api/messages/<team_id>', methods=['GET'])
@@ -3543,10 +3548,23 @@ def check_progress(team_id, participant_id):
     c.execute(f'SELECT start_time, submitted, {stage_column} FROM teams WHERE team_id = ?', (team_id,))
     team_row = c.fetchone()
 
+    # Get session state for validation
+    main_session_started = team_row and team_row[0] is not None
+    submitted = team_row and team_row[1] == 1
+
     tracked_stage = None
     if team_row and team_row[2]:
-        # Use the tracked stage if it exists (source of truth from frontend)
         tracked_stage = team_row[2]
+
+        # Validate and potentially upgrade the tracked stage based on actual progress
+        # This handles cases where the user refreshed before updateStage completed
+        if tracked_stage == 'wait_screen' and main_session_started:
+            # Session has started but stage shows wait_screen - upgrade to main_session
+            tracked_stage = 'main_session'
+        elif tracked_stage == 'main_session' and submitted:
+            # Session was submitted but stage shows main_session - upgrade to wait_for_survey
+            tracked_stage = 'wait_for_survey'
+
         conn.close()
         return jsonify({
             'success': True,
@@ -3556,8 +3574,6 @@ def check_progress(team_id, participant_id):
         })
 
     # Fall back to dynamic detection if no tracked stage exists
-    main_session_started = team_row and team_row[0] is not None
-    submitted = team_row and team_row[1] == 1
 
     # Check if comprehension was completed for this participant
     c.execute('SELECT id FROM comprehension_attempts WHERE team_id = ? AND participant_id = ?', (team_id, participant_id))
