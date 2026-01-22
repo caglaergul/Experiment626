@@ -2336,6 +2336,11 @@ HTML_TEMPLATE = r'''
                 trackKeystroke('title');
             }
         });
+
+        document.getElementById('finalTitle').addEventListener('blur', function() {
+            endTypingSession('title');
+        });
+
         let approvals = {1: false, 2: false};
 
         function countWords(text) {
@@ -2421,6 +2426,10 @@ HTML_TEMPLATE = r'''
             if (e.key.length === 1 || e.key === 'Backspace' || e.key === 'Delete') {
                 trackKeystroke('description');
             }
+        });
+
+        document.getElementById('finalDescription').addEventListener('blur', function() {
+            endTypingSession('description');
         });
 
         document.getElementById('finalDescription').addEventListener('focus', function() {
@@ -2591,7 +2600,11 @@ HTML_TEMPLATE = r'''
 
         function submitFinal() {
             console.log('[Submit] Submit button clicked');
-            
+
+            // End any active typing sessions to capture final metrics
+            endTypingSession('title');
+            endTypingSession('description');
+
             const title = document.getElementById('finalTitle').value.trim();
             const description = document.getElementById('finalDescription').value.trim();
             
