@@ -1986,6 +1986,9 @@ HTML_TEMPLATE = r'''
                         } else if (stage === 'main_session') {
                             // Resume main session - load data and start
                             goToMainSession();
+                        } else if (stage === 'wait_screen') {
+                            // Completed comprehension, waiting to start main session
+                            document.getElementById('waitScreen1').classList.add('active');
                         } else {
                             // Start from comprehension (default for new participants)
                             document.getElementById('comprehensionScreen').classList.add('active');
@@ -3280,7 +3283,7 @@ def get_typing_metrics(team_id, participant_id):
 def check_progress(team_id, participant_id):
     """
     Check participant progress and return current stage for auto-resume functionality.
-    Stages: login, comprehension, main_session, survey_page1, strategy_page, survey_page2, survey_page3, completed
+    Stages: login, comprehension, wait_screen, main_session, survey_page1, strategy_page, survey_page2, survey_page3, completed
     """
     if not team_id or not participant_id:
         return jsonify({'error': 'Team ID and Participant ID required'}), 400
@@ -3329,11 +3332,14 @@ def check_progress(team_id, participant_id):
         stage = 'strategy_page'
     elif submitted:
         stage = 'survey_page1'
-    elif main_session_started:
+    elif comprehension_done and main_session_started:
+        # This participant completed comprehension AND session was started
         stage = 'main_session'
     elif comprehension_done:
-        stage = 'main_session'  # They completed comprehension, should go to main session
+        # Completed comprehension but session not started yet - show wait screen
+        stage = 'wait_screen'
     else:
+        # Haven't completed comprehension yet
         stage = 'comprehension'
 
     return jsonify({
