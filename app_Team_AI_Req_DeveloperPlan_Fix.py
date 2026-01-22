@@ -1994,6 +1994,9 @@ HTML_TEMPLATE = r'''
             teamId = teamInput;
             participantId = participantInput;
 
+            // Mark as logged in
+            updateStage('login');
+
             // Check progress and auto-resume if participant has previous progress
             fetch(API_BASE + `/api/check_progress/${teamId}/${participantId}`)
                 .then(response => response.json())
@@ -3132,7 +3135,7 @@ def get_all_participants():
     teams = []
     for team_id in all_team_ids:
         # Get team data if it exists
-        c.execute('SELECT start_time, submitted, p1_last_heartbeat, p2_last_heartbeat FROM teams WHERE team_id = ?', (team_id,))
+        c.execute('SELECT start_time, submitted, p1_last_heartbeat, p2_last_heartbeat, p1_current_stage, p1_last_update, p2_current_stage, p2_last_update FROM teams WHERE team_id = ?', (team_id,))
         team_row = c.fetchone()
 
         if team_row:
@@ -3140,12 +3143,20 @@ def get_all_participants():
             submitted = team_row[1] == 1
             p1_heartbeat = team_row[2]
             p2_heartbeat = team_row[3]
+            p1_tracked_stage = team_row[4]
+            p1_tracked_update = team_row[5]
+            p2_tracked_stage = team_row[6]
+            p2_tracked_update = team_row[7]
         else:
             # Team doesn't exist in teams table yet (only in comprehension/survey tables)
             main_session_started = False
             submitted = False
             p1_heartbeat = None
             p2_heartbeat = None
+            p1_tracked_stage = None
+            p1_tracked_update = None
+            p2_tracked_stage = None
+            p2_tracked_update = None
 
         team_data = {
             'team_id': team_id,
@@ -3155,8 +3166,10 @@ def get_all_participants():
 
         # Check each participant
         for participant_id in ['1', '2']:
-            # Get heartbeat for this participant
+            # Get heartbeat and tracked stage for this participant
             participant_heartbeat = p1_heartbeat if participant_id == '1' else p2_heartbeat
+            tracked_stage = p1_tracked_stage if participant_id == '1' else p2_tracked_stage
+            tracked_update = p1_tracked_update if participant_id == '1' else p2_tracked_update
             # Check comprehension
             c.execute('SELECT timestamp FROM comprehension_attempts WHERE team_id = ? AND participant_id = ? ORDER BY timestamp DESC LIMIT 1',
                      (team_id, participant_id))
@@ -3184,35 +3197,41 @@ def get_all_participants():
             survey3_row = c.fetchone()
             survey_page3_done = survey3_row is not None
 
-            # Determine current stage based on progress
+            # Determine current stage - prefer tracked stage from frontend updates, fall back to dynamic detection
             stage = None
             last_update = None
 
-            if survey_page3_done:
-                stage = 'completed'
-                last_update = survey3_row[0]
-            elif survey_page2_done:
-                stage = 'survey_page3'
-                last_update = survey2_row[0]
-            elif strategy_description_done:
-                stage = 'survey_page2'
-                last_update = strategy_row[0]
-            elif survey_page1_done:
-                stage = 'strategy_page'
-                last_update = survey1_row[0]
-            elif submitted:
-                stage = 'survey_page1'
-                last_update = None
-            elif comprehension_done and main_session_started:
-                stage = 'main_session'
-                last_update = comp_row[0]
-            elif comprehension_done:
-                stage = 'wait_screen'
-                last_update = comp_row[0]
-            elif participant_heartbeat:
-                # Participant has logged in (has heartbeat) but hasn't completed comprehension
-                stage = 'comprehension'
-                last_update = participant_heartbeat
+            if tracked_stage:
+                # Use the stage tracked by frontend updateStage() calls
+                stage = tracked_stage
+                last_update = tracked_update
+            else:
+                # Fall back to dynamic detection based on database records
+                if survey_page3_done:
+                    stage = 'completed'
+                    last_update = survey3_row[0]
+                elif survey_page2_done:
+                    stage = 'survey_page3'
+                    last_update = survey2_row[0]
+                elif strategy_description_done:
+                    stage = 'survey_page2'
+                    last_update = strategy_row[0]
+                elif survey_page1_done:
+                    stage = 'strategy_page'
+                    last_update = survey1_row[0]
+                elif submitted:
+                    stage = 'survey_page1'
+                    last_update = None
+                elif comprehension_done and main_session_started:
+                    stage = 'main_session'
+                    last_update = comp_row[0]
+                elif comprehension_done:
+                    stage = 'wait_screen'
+                    last_update = comp_row[0]
+                elif participant_heartbeat:
+                    # Participant has logged in (has heartbeat) but hasn't completed comprehension
+                    stage = 'comprehension'
+                    last_update = participant_heartbeat
 
             # Only include participant if they have some activity (stage is set or heartbeat exists)
             if stage:
@@ -3545,6 +3564,12 @@ def update_stage():
     # Update database (single source of truth for multiple workers)
     conn = sqlite3.connect('study_data.db')
     c = conn.cursor()
+
+    # Ensure team exists - create if it doesn't
+    try:
+        c.execute('INSERT INTO teams (team_id) VALUES (?)', (team_id,))
+    except sqlite3.IntegrityError:
+        pass  # Team already exists
 
     # Determine which columns to update based on participant_id
     stage_column = f'p{participant_id}_current_stage'
