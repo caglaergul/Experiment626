@@ -2025,6 +2025,10 @@ HTML_TEMPLATE = r'''
                             // Resume at survey page 1
                             document.getElementById('surveyPage1').classList.add('active');
                             updateStage('survey_page1');
+                        } else if (stage === 'wait_for_survey') {
+                            // Resume at waiting screen after main session
+                            document.getElementById('waitScreen').classList.add('active');
+                            updateStage('wait_for_survey');
                         } else if (stage === 'main_session') {
                             // Resume main session - load data and start
                             goToMainSession();
@@ -2534,6 +2538,7 @@ HTML_TEMPLATE = r'''
                         clearInterval(timerInterval);
                         document.getElementById('mainContainer').style.display = 'none';
                         document.getElementById('waitScreen').classList.add('active');
+                        updateStage('wait_for_survey');
                         return;
                     }
                     
@@ -2641,10 +2646,11 @@ HTML_TEMPLATE = r'''
                     // Stop timer and polling
                     clearInterval(pollInterval);
                     clearInterval(timerInterval);
-                    
+
                     // Go to wait screen
                     document.getElementById('mainContainer').style.display = 'none';
                     document.getElementById('waitScreen').classList.add('active');
+                    updateStage('wait_for_survey');
                 });
             }
         }
@@ -2932,6 +2938,7 @@ def experimenter_dashboard():
         .stage-comprehension { background: #fef3c7; color: #92400e; }
         .stage-wait_screen { background: #fce7f3; color: #9f1239; }
         .stage-main_session { background: #d1fae5; color: #065f46; }
+        .stage-wait_for_survey { background: #fbcfe8; color: #831843; }
         .stage-survey_page1 { background: #e0e7ff; color: #3730a3; }
         .stage-strategy_page { background: #ddd6fe; color: #5b21b6; }
         .stage-survey_page2 { background: #fed7aa; color: #9a3412; }
@@ -3015,6 +3022,7 @@ def experimenter_dashboard():
                 'comprehension': 'Comprehension Questions',
                 'wait_screen': 'Waiting to Start',
                 'main_session': 'Main Session',
+                'wait_for_survey': 'Waiting for Survey',
                 'survey_page1': 'Survey Page 1',
                 'strategy_page': 'Strategy Description',
                 'survey_page2': 'Survey Page 2',
@@ -3111,32 +3119,137 @@ def get_all_participants():
     conn = sqlite3.connect('study_data.db')
     c = conn.cursor()
 
-    # Get all teams with participant stage data
+    # Get all unique team_ids from all tables (teams, comprehension, surveys)
     c.execute('''
-        SELECT team_id,
-               p1_current_stage, p1_last_update,
-               p2_current_stage, p2_last_update
-        FROM teams
-        ORDER BY team_id
+        SELECT DISTINCT team_id FROM (
+            SELECT team_id FROM teams
+            UNION
+            SELECT team_id FROM comprehension_attempts
+            UNION
+            SELECT team_id FROM survey_page1
+            UNION
+            SELECT team_id FROM survey_page2
+            UNION
+            SELECT team_id FROM survey_page3
+            UNION
+            SELECT team_id FROM strategy_descriptions
+        ) ORDER BY team_id
     ''')
-    rows = c.fetchall()
-    conn.close()
+    all_team_ids = [row[0] for row in c.fetchall()]
 
     teams = []
-    for row in rows:
-        team_data = {
-            'team_id': row[0],
-            'p1': {
-                'stage': row[1] or 'login',
-                'last_update': row[2]
-            } if row[1] or row[2] else None,
-            'p2': {
-                'stage': row[3] or 'login',
-                'last_update': row[4]
-            } if row[3] or row[4] else None
-        }
-        teams.append(team_data)
+    for team_id in all_team_ids:
+        # Get team data if it exists
+        c.execute('SELECT start_time, submitted, p1_last_heartbeat, p2_last_heartbeat, p1_current_stage, p1_last_update, p2_current_stage, p2_last_update FROM teams WHERE team_id = ?', (team_id,))
+        team_row = c.fetchone()
 
+        if team_row:
+            main_session_started = team_row[0] is not None
+            submitted = team_row[1] == 1
+            p1_heartbeat = team_row[2]
+            p2_heartbeat = team_row[3]
+            p1_tracked_stage = team_row[4]
+            p1_tracked_update = team_row[5]
+            p2_tracked_stage = team_row[6]
+            p2_tracked_update = team_row[7]
+        else:
+            # Team doesn't exist in teams table yet (only in comprehension/survey tables)
+            main_session_started = False
+            submitted = False
+            p1_heartbeat = None
+            p2_heartbeat = None
+            p1_tracked_stage = None
+            p1_tracked_update = None
+            p2_tracked_stage = None
+            p2_tracked_update = None
+
+        team_data = {
+            'team_id': team_id,
+            'p1': None,
+            'p2': None
+        }
+
+        # Check each participant
+        for participant_id in ['1', '2']:
+            # Get heartbeat and tracked stage for this participant
+            participant_heartbeat = p1_heartbeat if participant_id == '1' else p2_heartbeat
+            tracked_stage = p1_tracked_stage if participant_id == '1' else p2_tracked_stage
+            tracked_update = p1_tracked_update if participant_id == '1' else p2_tracked_update
+            # Check comprehension
+            c.execute('SELECT timestamp FROM comprehension_attempts WHERE team_id = ? AND participant_id = ? ORDER BY timestamp DESC LIMIT 1',
+                     (team_id, participant_id))
+            comp_row = c.fetchone()
+            comprehension_done = comp_row is not None
+
+            # Check surveys
+            c.execute('SELECT timestamp FROM survey_page1 WHERE team_id = ? AND participant_id = ? ORDER BY timestamp DESC LIMIT 1',
+                     (team_id, participant_id))
+            survey1_row = c.fetchone()
+            survey_page1_done = survey1_row is not None
+
+            c.execute('SELECT timestamp FROM strategy_descriptions WHERE team_id = ? AND participant_id = ? ORDER BY timestamp DESC LIMIT 1',
+                     (team_id, participant_id))
+            strategy_row = c.fetchone()
+            strategy_description_done = strategy_row is not None
+
+            c.execute('SELECT timestamp FROM survey_page2 WHERE team_id = ? AND participant_id = ? ORDER BY timestamp DESC LIMIT 1',
+                     (team_id, participant_id))
+            survey2_row = c.fetchone()
+            survey_page2_done = survey2_row is not None
+
+            c.execute('SELECT timestamp FROM survey_page3 WHERE team_id = ? AND participant_id = ? ORDER BY timestamp DESC LIMIT 1',
+                     (team_id, participant_id))
+            survey3_row = c.fetchone()
+            survey_page3_done = survey3_row is not None
+
+            # Determine current stage - prefer tracked stage from frontend updates, fall back to dynamic detection
+            stage = None
+            last_update = None
+
+            if tracked_stage:
+                # Use the stage tracked by frontend updateStage() calls
+                stage = tracked_stage
+                last_update = tracked_update
+            else:
+                # Fall back to dynamic detection based on database records
+                if survey_page3_done:
+                    stage = 'completed'
+                    last_update = survey3_row[0]
+                elif survey_page2_done:
+                    stage = 'survey_page3'
+                    last_update = survey2_row[0]
+                elif strategy_description_done:
+                    stage = 'survey_page2'
+                    last_update = strategy_row[0]
+                elif survey_page1_done:
+                    stage = 'strategy_page'
+                    last_update = survey1_row[0]
+                elif submitted:
+                    stage = 'survey_page1'
+                    last_update = None
+                elif comprehension_done and main_session_started:
+                    stage = 'main_session'
+                    last_update = comp_row[0]
+                elif comprehension_done:
+                    stage = 'wait_screen'
+                    last_update = comp_row[0]
+                elif participant_heartbeat:
+                    # Participant has logged in (has heartbeat) but hasn't completed comprehension
+                    stage = 'comprehension'
+                    last_update = participant_heartbeat
+
+            # Only include participant if they have some activity (stage is set or heartbeat exists)
+            if stage:
+                team_data[f'p{participant_id}'] = {
+                    'stage': stage,
+                    'last_update': last_update
+                }
+
+        # Only include team if at least one participant has activity
+        if team_data['p1'] or team_data['p2']:
+            teams.append(team_data)
+
+    conn.close()
     return jsonify({'teams': teams})
 
 @app.route('/api/start_session', methods=['POST'])
@@ -3150,16 +3263,21 @@ def start_session():
     
     conn = sqlite3.connect('study_data.db')
     c = conn.cursor()
+
+    # Ensure team exists
     try:
-        c.execute('INSERT INTO teams (team_id) VALUES (?)', (team_id,))
-        conn.commit()
+        c.execute('INSERT INTO teams (team_id, start_time) VALUES (?, NULL)', (team_id,))
     except sqlite3.IntegrityError:
-        pass
+        pass  # Team already exists
+
+    # Set start_time to now (when the main session actually begins)
+    c.execute('UPDATE teams SET start_time = CURRENT_TIMESTAMP WHERE team_id = ? AND start_time IS NULL', (team_id,))
+    conn.commit()
     conn.close()
-    
+
     if team_id not in active_teams:
         active_teams[team_id] = {'messages': []}
-    
+
     return jsonify({'success': True, 'team_id': team_id, 'participant_id': participant_id})
 
 @app.route('/api/save_comprehension_attempts', methods=['POST'])
@@ -3457,6 +3575,12 @@ def update_stage():
     conn = sqlite3.connect('study_data.db')
     c = conn.cursor()
 
+    # Ensure team exists - create if it doesn't (with start_time = NULL so session hasn't started yet)
+    try:
+        c.execute('INSERT INTO teams (team_id, start_time) VALUES (?, NULL)', (team_id,))
+    except sqlite3.IntegrityError:
+        pass  # Team already exists
+
     # Determine which columns to update based on participant_id
     stage_column = f'p{participant_id}_current_stage'
     update_column = f'p{participant_id}_last_update'
@@ -3667,7 +3791,7 @@ def get_typing_metrics(team_id, participant_id):
 def check_progress(team_id, participant_id):
     """
     Check participant progress and return current stage for auto-resume functionality.
-    Stages: login, comprehension, wait_screen, main_session, survey_page1, strategy_page, survey_page2, survey_page3, completed
+    Stages: login, comprehension, wait_screen, main_session, wait_for_survey, survey_page1, strategy_page, survey_page2, survey_page3, completed
     """
     if not team_id or not participant_id:
         return jsonify({'error': 'Team ID and Participant ID required'}), 400
@@ -3679,15 +3803,30 @@ def check_progress(team_id, participant_id):
     conn = sqlite3.connect('study_data.db')
     c = conn.cursor()
 
+    # First, check if there's a tracked stage for this participant (from updateStage() calls)
+    stage_column = f'p{participant_id}_current_stage'
+    c.execute(f'SELECT start_time, submitted, {stage_column} FROM teams WHERE team_id = ?', (team_id,))
+    team_row = c.fetchone()
+
+    tracked_stage = None
+    if team_row and team_row[2]:
+        # Use the tracked stage if it exists (source of truth from frontend)
+        tracked_stage = team_row[2]
+        conn.close()
+        return jsonify({
+            'success': True,
+            'stage': tracked_stage,
+            'team_id': team_id,
+            'participant_id': participant_id
+        })
+
+    # Fall back to dynamic detection if no tracked stage exists
+    main_session_started = team_row and team_row[0] is not None
+    submitted = team_row and team_row[1] == 1
+
     # Check if comprehension was completed for this participant
     c.execute('SELECT id FROM comprehension_attempts WHERE team_id = ? AND participant_id = ?', (team_id, participant_id))
     comprehension_done = c.fetchone() is not None
-
-    # Check if main session was started
-    c.execute('SELECT start_time, submitted FROM teams WHERE team_id = ?', (team_id,))
-    team_row = c.fetchone()
-    main_session_started = team_row and team_row[0] is not None
-    submitted = team_row and team_row[1] == 1
 
     # Check survey pages for this participant
     c.execute('SELECT id FROM survey_page1 WHERE team_id = ? AND participant_id = ?', (team_id, participant_id))
@@ -3715,7 +3854,8 @@ def check_progress(team_id, participant_id):
     elif survey_page1_done:
         stage = 'strategy_page'
     elif submitted:
-        stage = 'survey_page1'
+        # Session submitted - waiting for partner before starting surveys
+        stage = 'wait_for_survey'
     elif comprehension_done and main_session_started:
         # This participant completed comprehension AND session was started
         stage = 'main_session'
