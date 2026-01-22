@@ -145,14 +145,13 @@ def init_db():
     ''')
     c.execute('''
         CREATE TABLE IF NOT EXISTS participant_progress (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
             team_id TEXT NOT NULL,
             participant_id TEXT NOT NULL,
             current_screen TEXT DEFAULT 'login',
-            comprehension_answers TEXT,
-            comprehension_attempts TEXT,
+            comprehension_answers TEXT DEFAULT '{}',
+            comprehension_attempts TEXT DEFAULT '{}',
             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(team_id, participant_id)
+            PRIMARY KEY (team_id, participant_id)
         )
     ''')
 
@@ -175,6 +174,19 @@ def init_db():
         c.execute('ALTER TABLE teams ADD COLUMN p2_last_heartbeat TIMESTAMP')
     except sqlite3.OperationalError:
         pass  # Column already exists
+
+    # Ensure participant_progress table exists (migration for existing databases)
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS participant_progress (
+            team_id TEXT NOT NULL,
+            participant_id TEXT NOT NULL,
+            current_screen TEXT DEFAULT 'login',
+            comprehension_answers TEXT DEFAULT '{}',
+            comprehension_attempts TEXT DEFAULT '{}',
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (team_id, participant_id)
+        )
+    ''')
 
     conn.commit()
     conn.close()
@@ -1894,6 +1906,7 @@ HTML_TEMPLATE = r'''
         }
 
         function saveProgress(screen) {
+            console.log('[Progress] Saving progress - screen:', screen, 'team:', teamId, 'participant:', participantId);
             fetch(API_BASE + '/api/save_progress', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
@@ -1904,7 +1917,12 @@ HTML_TEMPLATE = r'''
                     comprehension_answers: questionsCorrect,
                     comprehension_attempts: comprehensionAttempts
                 })
-            }).catch(err => console.error('Error saving progress:', err));
+            })
+            .then(response => response.json())
+            .then(data => {
+                console.log('[Progress] Progress saved successfully:', data);
+            })
+            .catch(err => console.error('[Progress] Error saving progress:', err));
         }
 
         function restoreTypingMetrics(metrics) {
@@ -1991,9 +2009,10 @@ HTML_TEMPLATE = r'''
                 restoreTypingMetrics(progressData.typing_metrics);
             }
 
-            let targetScreen = progressData.current_screen;
+            let targetScreen = progressData.current_screen || 'comprehension';
 
             // Determine the correct screen based on completion status
+            // Priority: latest completed step takes precedence
             if (progressData.survey3_completed) {
                 targetScreen = 'thankYouScreen';
             } else if (progressData.survey2_completed) {
@@ -2008,9 +2027,14 @@ HTML_TEMPLATE = r'''
                 targetScreen = 'mainContainer';
             } else if (progressData.comprehension_saved) {
                 targetScreen = 'waitScreen1';
+            } else if (targetScreen === 'login' || !targetScreen) {
+                // If still on login or no progress, go to comprehension
+                targetScreen = 'comprehension';
             }
 
-            console.log('[Restore] Target screen:', targetScreen);
+            console.log('[Restore] Target screen determined:', targetScreen);
+            console.log('[Restore] Completion flags - comprehension_saved:', progressData.comprehension_saved,
+                        'team_started:', progressData.team_started, 'submitted:', progressData.submitted);
 
             // Set team info display
             document.getElementById('teamInfo').textContent = `Team: ${teamId} | You: ${participantId}`;
@@ -2037,7 +2061,8 @@ HTML_TEMPLATE = r'''
             } else if (targetScreen === 'thankYouScreen') {
                 goToScreen('thankYouScreen');
             } else {
-                // Default to comprehension screen
+                // Default to comprehension screen for unknown screens
+                console.log('[Restore] Unknown screen, defaulting to comprehension');
                 goToScreen('comprehensionScreen');
                 saveProgress('comprehension');
             }
@@ -2887,7 +2912,7 @@ HTML_TEMPLATE = r'''
                 })
             })
             .then(() => {
-                saveProgress('thankYou');
+                saveProgress('thankYouScreen');
                 document.getElementById('surveyPage3').classList.remove('active');
                 document.getElementById('thankYouScreen').classList.add('active');
             });
@@ -3684,26 +3709,24 @@ def save_progress():
 
     valid_screens = ['login', 'comprehension', 'waitScreen1', 'mainContainer',
                      'waitScreen', 'surveyPage1', 'strategyPage', 'surveyPage2',
-                     'surveyPage3', 'thankYou']
+                     'surveyPage3', 'thankYouScreen']
     if current_screen not in valid_screens:
         return jsonify({'error': 'Invalid screen'}), 400
 
     conn = sqlite3.connect('study_data.db')
     c = conn.cursor()
 
-    # Upsert progress
+    # Use INSERT OR REPLACE for SQLite compatibility
     c.execute('''
-        INSERT INTO participant_progress (team_id, participant_id, current_screen, comprehension_answers, comprehension_attempts, timestamp)
+        INSERT OR REPLACE INTO participant_progress
+        (team_id, participant_id, current_screen, comprehension_answers, comprehension_attempts, timestamp)
         VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-        ON CONFLICT(team_id, participant_id)
-        DO UPDATE SET current_screen = ?, comprehension_answers = ?, comprehension_attempts = ?, timestamp = CURRENT_TIMESTAMP
-    ''', (team_id, participant_id, current_screen, json.dumps(comprehension_answers), json.dumps(comprehension_attempts),
-          current_screen, json.dumps(comprehension_answers), json.dumps(comprehension_attempts)))
+    ''', (team_id, participant_id, current_screen, json.dumps(comprehension_answers), json.dumps(comprehension_attempts)))
 
     conn.commit()
     conn.close()
 
-    return jsonify({'success': True})
+    return jsonify({'success': True, 'saved_screen': current_screen})
 
 if __name__ == '__main__':
     app.run(debug=True)
