@@ -2028,6 +2028,10 @@ HTML_TEMPLATE = r'''
                             // Resume at survey page 1
                             document.getElementById('surveyPage1').classList.add('active');
                             updateStage('survey_page1');
+                        } else if (stage === 'wait_for_survey') {
+                            // Resume at waiting screen after main session
+                            document.getElementById('waitScreen').classList.add('active');
+                            updateStage('wait_for_survey');
                         } else if (stage === 'main_session') {
                             // Resume main session - load data and start
                             goToMainSession();
@@ -2537,6 +2541,7 @@ HTML_TEMPLATE = r'''
                         clearInterval(timerInterval);
                         document.getElementById('mainContainer').style.display = 'none';
                         document.getElementById('waitScreen').classList.add('active');
+                        updateStage('wait_for_survey');
                         return;
                     }
                     
@@ -2644,10 +2649,11 @@ HTML_TEMPLATE = r'''
                     // Stop timer and polling
                     clearInterval(pollInterval);
                     clearInterval(timerInterval);
-                    
+
                     // Go to wait screen
                     document.getElementById('mainContainer').style.display = 'none';
                     document.getElementById('waitScreen').classList.add('active');
+                    updateStage('wait_for_survey');
                 });
             }
         }
@@ -2935,6 +2941,7 @@ def experimenter_dashboard():
         .stage-comprehension { background: #fef3c7; color: #92400e; }
         .stage-wait_screen { background: #fce7f3; color: #9f1239; }
         .stage-main_session { background: #d1fae5; color: #065f46; }
+        .stage-wait_for_survey { background: #fbcfe8; color: #831843; }
         .stage-survey_page1 { background: #e0e7ff; color: #3730a3; }
         .stage-strategy_page { background: #ddd6fe; color: #5b21b6; }
         .stage-survey_page2 { background: #fed7aa; color: #9a3412; }
@@ -3018,6 +3025,7 @@ def experimenter_dashboard():
                 'comprehension': 'Comprehension Questions',
                 'wait_screen': 'Waiting to Start',
                 'main_session': 'Main Session',
+                'wait_for_survey': 'Waiting for Survey',
                 'survey_page1': 'Survey Page 1',
                 'strategy_page': 'Strategy Description',
                 'survey_page2': 'Survey Page 2',
@@ -3781,7 +3789,7 @@ def get_typing_metrics(team_id, participant_id):
 def check_progress(team_id, participant_id):
     """
     Check participant progress and return current stage for auto-resume functionality.
-    Stages: login, comprehension, wait_screen, main_session, survey_page1, strategy_page, survey_page2, survey_page3, completed
+    Stages: login, comprehension, wait_screen, main_session, wait_for_survey, survey_page1, strategy_page, survey_page2, survey_page3, completed
     """
     if not team_id or not participant_id:
         return jsonify({'error': 'Team ID and Participant ID required'}), 400
@@ -3829,7 +3837,8 @@ def check_progress(team_id, participant_id):
     elif survey_page1_done:
         stage = 'strategy_page'
     elif submitted:
-        stage = 'survey_page1'
+        # Session submitted - waiting for partner before starting surveys
+        stage = 'wait_for_survey'
     elif comprehension_done and main_session_started:
         # This participant completed comprehension AND session was started
         stage = 'main_session'
