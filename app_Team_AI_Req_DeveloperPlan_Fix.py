@@ -3266,16 +3266,21 @@ def start_session():
     
     conn = sqlite3.connect('study_data.db')
     c = conn.cursor()
+
+    # Ensure team exists
     try:
-        c.execute('INSERT INTO teams (team_id) VALUES (?)', (team_id,))
-        conn.commit()
+        c.execute('INSERT INTO teams (team_id, start_time) VALUES (?, NULL)', (team_id,))
     except sqlite3.IntegrityError:
-        pass
+        pass  # Team already exists
+
+    # Set start_time to now (when the main session actually begins)
+    c.execute('UPDATE teams SET start_time = CURRENT_TIMESTAMP WHERE team_id = ? AND start_time IS NULL', (team_id,))
+    conn.commit()
     conn.close()
-    
+
     if team_id not in active_teams:
         active_teams[team_id] = {'messages': []}
-    
+
     return jsonify({'success': True, 'team_id': team_id, 'participant_id': participant_id})
 
 @app.route('/api/save_comprehension_attempts', methods=['POST'])
@@ -3573,9 +3578,9 @@ def update_stage():
     conn = sqlite3.connect('study_data.db')
     c = conn.cursor()
 
-    # Ensure team exists - create if it doesn't
+    # Ensure team exists - create if it doesn't (with start_time = NULL so session hasn't started yet)
     try:
-        c.execute('INSERT INTO teams (team_id) VALUES (?)', (team_id,))
+        c.execute('INSERT INTO teams (team_id, start_time) VALUES (?, NULL)', (team_id,))
     except sqlite3.IntegrityError:
         pass  # Team already exists
 
@@ -3801,15 +3806,30 @@ def check_progress(team_id, participant_id):
     conn = sqlite3.connect('study_data.db')
     c = conn.cursor()
 
+    # First, check if there's a tracked stage for this participant (from updateStage() calls)
+    stage_column = f'p{participant_id}_current_stage'
+    c.execute(f'SELECT start_time, submitted, {stage_column} FROM teams WHERE team_id = ?', (team_id,))
+    team_row = c.fetchone()
+
+    tracked_stage = None
+    if team_row and team_row[2]:
+        # Use the tracked stage if it exists (source of truth from frontend)
+        tracked_stage = team_row[2]
+        conn.close()
+        return jsonify({
+            'success': True,
+            'stage': tracked_stage,
+            'team_id': team_id,
+            'participant_id': participant_id
+        })
+
+    # Fall back to dynamic detection if no tracked stage exists
+    main_session_started = team_row and team_row[0] is not None
+    submitted = team_row and team_row[1] == 1
+
     # Check if comprehension was completed for this participant
     c.execute('SELECT id FROM comprehension_attempts WHERE team_id = ? AND participant_id = ?', (team_id, participant_id))
     comprehension_done = c.fetchone() is not None
-
-    # Check if main session was started
-    c.execute('SELECT start_time, submitted FROM teams WHERE team_id = ?', (team_id,))
-    team_row = c.fetchone()
-    main_session_started = team_row and team_row[0] is not None
-    submitted = team_row and team_row[1] == 1
 
     # Check survey pages for this participant
     c.execute('SELECT id FROM survey_page1 WHERE team_id = ? AND participant_id = ?', (team_id, participant_id))
