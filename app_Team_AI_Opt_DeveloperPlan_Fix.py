@@ -2368,7 +2368,9 @@ HTML_TEMPLATE = r'''
         });
 
         document.getElementById('finalTitle').addEventListener('blur', function() {
-            setTimeout(() => { isUserEditingTitle = false; }, 500);
+            // Timeout must be longer than the 1000ms save delay to prevent race condition
+            // where loadFinalIdea() overwrites unsaved user input
+            setTimeout(() => { isUserEditingTitle = false; }, 1500);
         });
 
         document.getElementById('finalTitle').addEventListener('input', function() {
@@ -2406,7 +2408,9 @@ HTML_TEMPLATE = r'''
         });
 
         document.getElementById('finalDescription').addEventListener('blur', function() {
-            setTimeout(() => { isUserEditingDesc = false; }, 500);
+            // Timeout must be longer than the 1000ms save delay to prevent race condition
+            // where loadFinalIdea() overwrites unsaved user input
+            setTimeout(() => { isUserEditingDesc = false; }, 1500);
         });
 
         document.getElementById('finalDescription').addEventListener('input', function() {
