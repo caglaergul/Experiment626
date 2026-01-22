@@ -1622,7 +1622,11 @@ HTML_TEMPLATE = r'''
         let currentScreen = 'login';
 
         function saveSessionState() {
-            if (!teamId || !participantId) return;
+            if (!teamId || !participantId) {
+                console.log('[Session] Cannot save - no teamId or participantId');
+                return;
+            }
+            console.log('[Session] Saving state for screen:', currentScreen);
 
             // Collect comprehension answers
             const compAnswers = {};
@@ -1676,7 +1680,12 @@ HTML_TEMPLATE = r'''
                     survey3_data: survey3Data,
                     strategy_data: strategyData
                 })
-            }).catch(err => console.error('[Session] Error saving state:', err));
+            })
+            .then(response => response.json())
+            .then(data => {
+                console.log('[Session] State saved successfully:', data);
+            })
+            .catch(err => console.error('[Session] Error saving state:', err));
         }
 
         function restoreSessionState(sessionData) {
@@ -2112,13 +2121,19 @@ HTML_TEMPLATE = r'''
             participantId = participantInput;
 
             // Check for existing session
+            console.log('[Session] Checking for existing session for team:', teamId, 'participant:', participantId);
             fetch(API_BASE + `/api/get_session_state/${teamId}/${participantId}`)
-                .then(response => response.json())
+                .then(response => {
+                    console.log('[Session] API response status:', response.status);
+                    return response.json();
+                })
                 .then(data => {
-                    if (data.exists && data.current_screen !== 'login') {
+                    console.log('[Session] Session data received:', data);
+                    if (data.exists && data.current_screen && data.current_screen !== 'login') {
                         // Found existing session - ask if they want to resume
-                        const lastUpdated = new Date(data.last_updated).toLocaleString();
-                        if (confirm(`Found a previous session (last active: ${lastUpdated}).\n\nDo you want to continue from where you left off?\n\nClick OK to resume, or Cancel to start fresh.`)) {
+                        const lastUpdated = data.last_updated ? new Date(data.last_updated).toLocaleString() : 'unknown';
+                        console.log('[Session] Found existing session at screen:', data.current_screen);
+                        if (confirm(`Found a previous session (last active: ${lastUpdated}).\n\nYou were on: ${data.current_screen}\n\nDo you want to continue from where you left off?\n\nClick OK to resume, or Cancel to start fresh.`)) {
                             // Restore the session
                             restoreSessionState(data);
                         } else {
@@ -2131,6 +2146,7 @@ HTML_TEMPLATE = r'''
                         }
                     } else {
                         // No existing session - start normally
+                        console.log('[Session] No existing session found, starting fresh');
                         currentScreen = 'comprehension';
                         document.getElementById('loginScreen').style.display = 'none';
                         document.getElementById('comprehensionScreen').classList.add('active');
@@ -2140,6 +2156,7 @@ HTML_TEMPLATE = r'''
                 })
                 .catch(err => {
                     console.error('[Session] Error checking session:', err);
+                    alert('Error checking session state. Starting fresh. Check browser console for details.');
                     // On error, just proceed normally
                     currentScreen = 'comprehension';
                     document.getElementById('loginScreen').style.display = 'none';
@@ -3656,26 +3673,47 @@ def save_session_state():
     if participant_id not in ['1', '2']:
         return jsonify({'error': 'Invalid participant_id'}), 400
 
-    conn = sqlite3.connect('study_data.db')
-    c = conn.cursor()
+    try:
+        conn = sqlite3.connect('study_data.db')
+        c = conn.cursor()
 
-    # Use INSERT OR REPLACE to update if exists
-    c.execute('''
-        INSERT OR REPLACE INTO session_state
-        (team_id, participant_id, current_screen, comprehension_answers, comprehension_attempts,
-         survey1_data, survey2_data, survey3_data, strategy_data, last_updated)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-    ''', (team_id, participant_id, current_screen,
-          json.dumps(comprehension_answers) if comprehension_answers else None,
-          json.dumps(comprehension_attempts) if comprehension_attempts else None,
-          json.dumps(survey1_data) if survey1_data else None,
-          json.dumps(survey2_data) if survey2_data else None,
-          json.dumps(survey3_data) if survey3_data else None,
-          json.dumps(strategy_data) if strategy_data else None))
-    conn.commit()
-    conn.close()
+        # Ensure the session_state table exists (in case app wasn't restarted after update)
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS session_state (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                team_id TEXT NOT NULL,
+                participant_id TEXT NOT NULL,
+                current_screen TEXT NOT NULL,
+                comprehension_answers TEXT,
+                comprehension_attempts TEXT,
+                survey1_data TEXT,
+                survey2_data TEXT,
+                survey3_data TEXT,
+                strategy_data TEXT,
+                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(team_id, participant_id)
+            )
+        ''')
 
-    return jsonify({'success': True})
+        # Use INSERT OR REPLACE to update if exists
+        c.execute('''
+            INSERT OR REPLACE INTO session_state
+            (team_id, participant_id, current_screen, comprehension_answers, comprehension_attempts,
+             survey1_data, survey2_data, survey3_data, strategy_data, last_updated)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ''', (team_id, participant_id, current_screen,
+              json.dumps(comprehension_answers) if comprehension_answers else None,
+              json.dumps(comprehension_attempts) if comprehension_attempts else None,
+              json.dumps(survey1_data) if survey1_data else None,
+              json.dumps(survey2_data) if survey2_data else None,
+              json.dumps(survey3_data) if survey3_data else None,
+              json.dumps(strategy_data) if strategy_data else None))
+        conn.commit()
+        conn.close()
+
+        return jsonify({'success': True, 'screen': current_screen})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/get_session_state/<team_id>/<participant_id>', methods=['GET'])
 def get_session_state(team_id, participant_id):
@@ -3683,40 +3721,61 @@ def get_session_state(team_id, participant_id):
     if participant_id not in ['1', '2']:
         return jsonify({'error': 'Invalid participant_id'}), 400
 
-    conn = sqlite3.connect('study_data.db')
-    c = conn.cursor()
+    try:
+        conn = sqlite3.connect('study_data.db')
+        c = conn.cursor()
 
-    # Check if the session has been submitted (final state)
-    c.execute('SELECT submitted FROM teams WHERE team_id = ?', (team_id,))
-    team_row = c.fetchone()
+        # Ensure the session_state table exists (in case app wasn't restarted after update)
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS session_state (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                team_id TEXT NOT NULL,
+                participant_id TEXT NOT NULL,
+                current_screen TEXT NOT NULL,
+                comprehension_answers TEXT,
+                comprehension_attempts TEXT,
+                survey1_data TEXT,
+                survey2_data TEXT,
+                survey3_data TEXT,
+                strategy_data TEXT,
+                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(team_id, participant_id)
+            )
+        ''')
 
-    # Get session state
-    c.execute('''
-        SELECT current_screen, comprehension_answers, comprehension_attempts,
-               survey1_data, survey2_data, survey3_data, strategy_data, last_updated
-        FROM session_state
-        WHERE team_id = ? AND participant_id = ?
-    ''', (team_id, participant_id))
-    row = c.fetchone()
-    conn.close()
+        # Check if the session has been submitted (final state)
+        c.execute('SELECT submitted FROM teams WHERE team_id = ?', (team_id,))
+        team_row = c.fetchone()
 
-    if not row:
-        return jsonify({'exists': False})
+        # Get session state
+        c.execute('''
+            SELECT current_screen, comprehension_answers, comprehension_attempts,
+                   survey1_data, survey2_data, survey3_data, strategy_data, last_updated
+            FROM session_state
+            WHERE team_id = ? AND participant_id = ?
+        ''', (team_id, participant_id))
+        row = c.fetchone()
+        conn.close()
 
-    result = {
-        'exists': True,
-        'current_screen': row[0],
-        'comprehension_answers': json.loads(row[1]) if row[1] else None,
-        'comprehension_attempts': json.loads(row[2]) if row[2] else None,
-        'survey1_data': json.loads(row[3]) if row[3] else None,
-        'survey2_data': json.loads(row[4]) if row[4] else None,
-        'survey3_data': json.loads(row[5]) if row[5] else None,
-        'strategy_data': json.loads(row[6]) if row[6] else None,
-        'last_updated': row[7],
-        'submitted': bool(team_row[0]) if team_row else False
-    }
+        if not row:
+            return jsonify({'exists': False})
 
-    return jsonify(result)
+        result = {
+            'exists': True,
+            'current_screen': row[0],
+            'comprehension_answers': json.loads(row[1]) if row[1] else None,
+            'comprehension_attempts': json.loads(row[2]) if row[2] else None,
+            'survey1_data': json.loads(row[3]) if row[3] else None,
+            'survey2_data': json.loads(row[4]) if row[4] else None,
+            'survey3_data': json.loads(row[5]) if row[5] else None,
+            'strategy_data': json.loads(row[6]) if row[6] else None,
+            'last_updated': row[7],
+            'submitted': bool(team_row[0]) if team_row else False
+        }
+
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'exists': False, 'error': str(e)})
 
 if __name__ == '__main__':
     app.run(debug=True)
