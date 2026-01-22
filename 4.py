@@ -575,7 +575,6 @@ HTML_TEMPLATE = r'''
             display: flex;
             flex-direction: column;
             padding: 20px;
-            border-bottom: 2px solid #e0e0e0;
             overflow: hidden;
         }
 
@@ -659,12 +658,12 @@ HTML_TEMPLATE = r'''
 
         .final-description-textarea {
             width: 100%;
-            min-height: 50px;
-            max-height: 50px;
-            padding: 8px;
+            min-height: 150px;
+            flex: 1;
+            padding: 12px;
             border: 2px solid #e0e0e0;
             border-radius: 6px;
-            font-size: 13px;
+            font-size: 14px;
             font-family: inherit;
             resize: none;
         }
@@ -689,9 +688,8 @@ HTML_TEMPLATE = r'''
             flex: 1;
             display: flex;
             flex-direction: column;
-            padding: 10px;
-            overflow-y: visible;
-            height: 70%;
+            padding: 20px;
+            overflow-y: auto;
         }
 
         .final-textarea {
@@ -1303,56 +1301,37 @@ HTML_TEMPLATE = r'''
                     </div>
                 </div>
             </div>
-            <div class="chat-header">
-                <h2>ChatGPT Assistant</h2>
-                <div class="team-info" id="teamInfo"></div>
-            </div>
-
-            <div class="messages" id="messages"></div>
-
-            <div class="typing-indicator" id="typingIndicator">
-                <span></span>
-                <span></span>
-                <span></span>
-            </div>
-
-            <div class="input-area">
-                <input type="text" id="messageInput" placeholder="Ask ChatGPT..." 
-                       onkeypress="if(event.key==='Enter') sendMessage()">
-                <button class="send-btn" onclick="sendMessage()">Send</button>
+            <div class="ideas-section">
+                <div class="ideas-header">Possible Ideas</div>
+                <div class="ideas-list" id="ideasList"></div>
+                <input type="text" id="ideaInput" class="idea-input"
+                       placeholder="Add a new idea..." onkeypress="if(event.key==='Enter') addIdea()">
+                <button class="add-idea-btn" onclick="addIdea()">+ Add Idea</button>
             </div>
         </div>
 
         <div class="right-panel">
-            <div class="ideas-section">
-                <div class="ideas-header">Possible Ideas</div>
-                <div class="ideas-list" id="ideasList"></div>
-                <input type="text" id="ideaInput" class="idea-input" 
-                       placeholder="Add a new idea..." onkeypress="if(event.key==='Enter') addIdea()">
-                <button class="add-idea-btn" onclick="addIdea()">+ Add Idea</button>
-            </div>
-
             <div class="final-section">
                 <div class="ideas-header">Final Idea <span id="modeLabel" style="color: #10b981; font-weight: 600;">(Editing Mode)</span></div>
-                
+
                 <div class="final-input-group">
                     <label class="final-input-label">
-                        Title 
+                        Title
                         <span class="word-counter" id="titleCounter">0/5 words</span>
                     </label>
-                    <input type="text" id="finalTitle" class="final-title-input" 
+                    <input type="text" id="finalTitle" class="final-title-input"
                            placeholder="Enter title (max 5 words)">
                 </div>
-                
+
                 <div class="final-input-group">
                     <label class="final-input-label">
                         Description
                         <span class="word-counter" id="descCounter">0/80 words</span>
                     </label>
-                    <textarea id="finalDescription" class="final-description-textarea" 
+                    <textarea id="finalDescription" class="final-description-textarea"
                               placeholder="Enter description (max 80 words)"></textarea>
                 </div>
-                
+
                 <div class="approval-section">
                     <div class="approval-header">Both participants must approve:</div>
                     <div class="approval-checkboxes">
@@ -1366,7 +1345,7 @@ HTML_TEMPLATE = r'''
                         </div>
                     </div>
                 </div>
-                
+
                 <button class="submit-btn" id="submitBtn" onclick="submitFinal()" disabled>Submit Final Idea</button>
             </div>
         </div>
