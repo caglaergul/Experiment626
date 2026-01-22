@@ -143,6 +143,22 @@ def init_db():
             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS session_state (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            team_id TEXT NOT NULL,
+            participant_id TEXT NOT NULL,
+            current_screen TEXT NOT NULL,
+            comprehension_answers TEXT,
+            comprehension_attempts TEXT,
+            survey1_data TEXT,
+            survey2_data TEXT,
+            survey3_data TEXT,
+            strategy_data TEXT,
+            last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(team_id, participant_id)
+        )
+    ''')
 
     # Add approval columns if they don't exist (migration for multi-worker fix)
     try:
@@ -1602,6 +1618,225 @@ HTML_TEMPLATE = r'''
         let onlineParticipants = {};
         const API_BASE = window.location.origin;
 
+        // Session state management for refresh persistence
+        let currentScreen = 'login';
+
+        function saveSessionState() {
+            if (!teamId || !participantId) return;
+
+            // Collect comprehension answers
+            const compAnswers = {};
+            for (let i = 1; i <= 7; i++) {
+                const checked = document.querySelector(`input[name="q${i}"]:checked`);
+                if (checked) compAnswers[`q${i}`] = checked.value;
+            }
+
+            // Collect survey1 data
+            const survey1Data = {};
+            for (let i = 1; i <= 10; i++) {
+                const el = document.getElementById(`q${i}`);
+                if (el && el.value) survey1Data[`q${i}`] = el.value;
+            }
+
+            // Collect survey2 data
+            const survey2Data = {
+                employment_status: document.getElementById('employmentStatus')?.value || '',
+                major_field: document.getElementById('majorField')?.value || '',
+                major_other: document.getElementById('majorOther')?.value || '',
+                age: document.getElementById('age')?.value || '',
+                gender: document.getElementById('gender')?.value || ''
+            };
+
+            // Collect survey3 data
+            const survey3Data = {
+                first_last_name: document.getElementById('firstLastName')?.value || '',
+                address_line1: document.getElementById('addressLine1')?.value || '',
+                address_line2: document.getElementById('addressLine2')?.value || '',
+                city: document.getElementById('city')?.value || '',
+                state: document.getElementById('state')?.value || '',
+                postal_code: document.getElementById('postalCode')?.value || ''
+            };
+
+            // Collect strategy data
+            const strategyData = {
+                strategy_description: document.getElementById('strategyDescription')?.value || ''
+            };
+
+            fetch(API_BASE + '/api/save_session_state', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    team_id: teamId,
+                    participant_id: participantId,
+                    current_screen: currentScreen,
+                    comprehension_answers: compAnswers,
+                    comprehension_attempts: comprehensionAttempts,
+                    survey1_data: survey1Data,
+                    survey2_data: survey2Data,
+                    survey3_data: survey3Data,
+                    strategy_data: strategyData
+                })
+            }).catch(err => console.error('[Session] Error saving state:', err));
+        }
+
+        function restoreSessionState(sessionData) {
+            console.log('[Session] Restoring session to screen:', sessionData.current_screen);
+
+            // Restore comprehension answers
+            if (sessionData.comprehension_answers) {
+                Object.entries(sessionData.comprehension_answers).forEach(([key, value]) => {
+                    const radio = document.querySelector(`input[name="${key}"][value="${value}"]`);
+                    if (radio) radio.checked = true;
+                });
+            }
+
+            // Restore comprehension attempts
+            if (sessionData.comprehension_attempts) {
+                comprehensionAttempts = sessionData.comprehension_attempts;
+            }
+
+            // Restore survey1 data
+            if (sessionData.survey1_data) {
+                Object.entries(sessionData.survey1_data).forEach(([key, value]) => {
+                    const el = document.getElementById(key);
+                    if (el) el.value = value;
+                });
+            }
+
+            // Restore survey2 data
+            if (sessionData.survey2_data) {
+                if (sessionData.survey2_data.employment_status) {
+                    document.getElementById('employmentStatus').value = sessionData.survey2_data.employment_status;
+                }
+                if (sessionData.survey2_data.major_field) {
+                    document.getElementById('majorField').value = sessionData.survey2_data.major_field;
+                    toggleMajorOther();
+                }
+                if (sessionData.survey2_data.major_other) {
+                    document.getElementById('majorOther').value = sessionData.survey2_data.major_other;
+                }
+                if (sessionData.survey2_data.age) {
+                    document.getElementById('age').value = sessionData.survey2_data.age;
+                }
+                if (sessionData.survey2_data.gender) {
+                    document.getElementById('gender').value = sessionData.survey2_data.gender;
+                }
+            }
+
+            // Restore survey3 data
+            if (sessionData.survey3_data) {
+                if (sessionData.survey3_data.first_last_name) {
+                    document.getElementById('firstLastName').value = sessionData.survey3_data.first_last_name;
+                }
+                if (sessionData.survey3_data.address_line1) {
+                    document.getElementById('addressLine1').value = sessionData.survey3_data.address_line1;
+                }
+                if (sessionData.survey3_data.address_line2) {
+                    document.getElementById('addressLine2').value = sessionData.survey3_data.address_line2;
+                }
+                if (sessionData.survey3_data.city) {
+                    document.getElementById('city').value = sessionData.survey3_data.city;
+                }
+                if (sessionData.survey3_data.state) {
+                    document.getElementById('state').value = sessionData.survey3_data.state;
+                }
+                if (sessionData.survey3_data.postal_code) {
+                    document.getElementById('postalCode').value = sessionData.survey3_data.postal_code;
+                }
+            }
+
+            // Restore strategy data
+            if (sessionData.strategy_data && sessionData.strategy_data.strategy_description) {
+                document.getElementById('strategyDescription').value = sessionData.strategy_data.strategy_description;
+            }
+
+            // Navigate to the saved screen
+            navigateToScreen(sessionData.current_screen);
+        }
+
+        function navigateToScreen(screenName) {
+            // Hide all screens first
+            document.getElementById('loginScreen').style.display = 'none';
+            document.getElementById('comprehensionScreen').classList.remove('active');
+            document.getElementById('waitScreen1').classList.remove('active');
+            document.getElementById('mainContainer').classList.remove('active');
+            document.getElementById('instructionsScreen').classList.remove('active');
+            document.getElementById('waitScreen').classList.remove('active');
+            document.getElementById('surveyPage1').classList.remove('active');
+            document.getElementById('strategyPage').classList.remove('active');
+            document.getElementById('surveyPage2').classList.remove('active');
+            document.getElementById('surveyPage3').classList.remove('active');
+            document.getElementById('thankYouScreen').classList.remove('active');
+
+            currentScreen = screenName;
+
+            // Show the target screen
+            switch (screenName) {
+                case 'login':
+                    document.getElementById('loginScreen').style.display = 'flex';
+                    break;
+                case 'comprehension':
+                    document.getElementById('comprehensionScreen').classList.add('active');
+                    break;
+                case 'waitScreen1':
+                    document.getElementById('waitScreen1').classList.add('active');
+                    break;
+                case 'main':
+                    document.getElementById('mainContainer').classList.add('active');
+                    initializeMainSession();
+                    break;
+                case 'waitScreen':
+                    document.getElementById('waitScreen').classList.add('active');
+                    break;
+                case 'surveyPage1':
+                    document.getElementById('surveyPage1').classList.add('active');
+                    break;
+                case 'strategyPage':
+                    document.getElementById('strategyPage').classList.add('active');
+                    break;
+                case 'surveyPage2':
+                    document.getElementById('surveyPage2').classList.add('active');
+                    break;
+                case 'surveyPage3':
+                    document.getElementById('surveyPage3').classList.add('active');
+                    break;
+                case 'thankYou':
+                    document.getElementById('thankYouScreen').classList.add('active');
+                    break;
+            }
+
+            document.getElementById('teamInfo').textContent = `Team: ${teamId} | You: ${participantId}`;
+        }
+
+        function initializeMainSession() {
+            // Disable the other participant's checkbox
+            const otherParticipant = participantId === '1' ? '2' : '1';
+            const otherCheckbox = document.getElementById(`approval${otherParticipant}`);
+            const otherContainer = document.getElementById(`approval${otherParticipant}Container`);
+
+            otherCheckbox.disabled = true;
+            otherContainer.classList.add('disabled');
+
+            loadMessages();
+            loadIdeas();
+            loadFinalIdea();
+            loadApprovals();
+
+            // Start timer and online status updates
+            startTimer();
+            updateOnlineStatus();
+            sendHeartbeat();
+
+            pollInterval = setInterval(() => {
+                loadMessages();
+                loadIdeas();
+                loadFinalIdea();
+                loadApprovals();
+                updateOnlineStatus();
+                sendHeartbeat();
+            }, 2000);
+        }
+
         // Comprehension questions correct answers
         const correctAnswers = {
             q1: 'False',
@@ -1689,6 +1924,8 @@ HTML_TEMPLATE = r'''
                 // Proceed to wait screen
                 document.getElementById('comprehensionScreen').classList.remove('active');
                 document.getElementById('waitScreen1').classList.add('active');
+                currentScreen = 'waitScreen1';
+                saveSessionState();
             }
         }
 
@@ -1753,33 +1990,10 @@ HTML_TEMPLATE = r'''
                 // Hide wait screen and show main container
                 document.getElementById('waitScreen1').classList.remove('active');
                 document.getElementById('mainContainer').classList.add('active');
+                currentScreen = 'main';
+                saveSessionState();
 
-                // Disable the other participant's checkbox
-                const otherParticipant = participantId === '1' ? '2' : '1';
-                const otherCheckbox = document.getElementById(`approval${otherParticipant}`);
-                const otherContainer = document.getElementById(`approval${otherParticipant}Container`);
-
-                otherCheckbox.disabled = true;
-                otherContainer.classList.add('disabled');
-
-                loadMessages();
-                loadIdeas();
-                loadFinalIdea();
-                loadApprovals();
-
-                // Start timer and online status updates
-                startTimer();
-                updateOnlineStatus();
-                sendHeartbeat();
-
-                pollInterval = setInterval(() => {
-                    loadMessages();
-                    loadIdeas();
-                    loadFinalIdea();
-                    loadApprovals();
-                    updateOnlineStatus();
-                    sendHeartbeat();
-                }, 2000);
+                initializeMainSession();
             });
         }
 
@@ -1876,7 +2090,7 @@ HTML_TEMPLATE = r'''
         function startStudy() {
             const teamInput = document.getElementById('teamId').value.trim();
             const participantInput = document.getElementById('participantId').value.trim();
-            
+
             if (!teamInput || !participantInput) {
                 alert('Please enter both Team ID and Participant ID');
                 return;
@@ -1897,11 +2111,41 @@ HTML_TEMPLATE = r'''
             teamId = teamInput;
             participantId = participantInput;
 
-            // Go to comprehension screen (don't start session/timer yet)
-            // Timer will only start when participant clicks Continue on wait screen
-            document.getElementById('loginScreen').style.display = 'none';
-            document.getElementById('comprehensionScreen').classList.add('active');
-            document.getElementById('teamInfo').textContent = `Team: ${teamId} | You: ${participantId}`;
+            // Check for existing session
+            fetch(API_BASE + `/api/get_session_state/${teamId}/${participantId}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.exists && data.current_screen !== 'login') {
+                        // Found existing session - ask if they want to resume
+                        const lastUpdated = new Date(data.last_updated).toLocaleString();
+                        if (confirm(`Found a previous session (last active: ${lastUpdated}).\n\nDo you want to continue from where you left off?\n\nClick OK to resume, or Cancel to start fresh.`)) {
+                            // Restore the session
+                            restoreSessionState(data);
+                        } else {
+                            // Start fresh - go to comprehension screen
+                            currentScreen = 'comprehension';
+                            document.getElementById('loginScreen').style.display = 'none';
+                            document.getElementById('comprehensionScreen').classList.add('active');
+                            document.getElementById('teamInfo').textContent = `Team: ${teamId} | You: ${participantId}`;
+                            saveSessionState();
+                        }
+                    } else {
+                        // No existing session - start normally
+                        currentScreen = 'comprehension';
+                        document.getElementById('loginScreen').style.display = 'none';
+                        document.getElementById('comprehensionScreen').classList.add('active');
+                        document.getElementById('teamInfo').textContent = `Team: ${teamId} | You: ${participantId}`;
+                        saveSessionState();
+                    }
+                })
+                .catch(err => {
+                    console.error('[Session] Error checking session:', err);
+                    // On error, just proceed normally
+                    currentScreen = 'comprehension';
+                    document.getElementById('loginScreen').style.display = 'none';
+                    document.getElementById('comprehensionScreen').classList.add('active');
+                    document.getElementById('teamInfo').textContent = `Team: ${teamId} | You: ${participantId}`;
+                });
         }
 
         function loadMessages() {
@@ -2385,9 +2629,11 @@ HTML_TEMPLATE = r'''
                         clearInterval(timerInterval);
                         document.getElementById('mainContainer').style.display = 'none';
                         document.getElementById('waitScreen').classList.add('active');
+                        currentScreen = 'waitScreen';
+                        saveSessionState();
                         return;
                     }
-                    
+
                     if (data.approvals) {
                         approvals = {
                             1: data.approvals['1'] || false,
@@ -2473,12 +2719,12 @@ HTML_TEMPLATE = r'''
 
             if (confirm('Are you sure you want to submit? This will end the session for both participants.')) {
                 const finalIdea = `Title: ${title}\n\nDescription: ${description}`;
-                
+
                 fetch(API_BASE + '/api/submit', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({
-                        team_id: teamId, 
+                        team_id: teamId,
                         final_idea: finalIdea,
                         title: title,
                         description: description
@@ -2488,10 +2734,12 @@ HTML_TEMPLATE = r'''
                     // Stop timer and polling
                     clearInterval(pollInterval);
                     clearInterval(timerInterval);
-                    
+
                     // Go to wait screen
                     document.getElementById('mainContainer').style.display = 'none';
                     document.getElementById('waitScreen').classList.add('active');
+                    currentScreen = 'waitScreen';
+                    saveSessionState();
                 });
             }
         }
@@ -2500,6 +2748,8 @@ HTML_TEMPLATE = r'''
         function goToSurveyPage1() {
             document.getElementById('waitScreen').classList.remove('active');
             document.getElementById('surveyPage1').classList.add('active');
+            currentScreen = 'surveyPage1';
+            saveSessionState();
         }
 
         function toggleMajorOther() {
@@ -2541,6 +2791,8 @@ HTML_TEMPLATE = r'''
             .then(() => {
                 document.getElementById('surveyPage1').classList.remove('active');
                 document.getElementById('strategyPage').classList.add('active');
+                currentScreen = 'strategyPage';
+                saveSessionState();
             });
         }
 
@@ -2565,6 +2817,8 @@ HTML_TEMPLATE = r'''
             .then(() => {
                 document.getElementById('strategyPage').classList.remove('active');
                 document.getElementById('surveyPage2').classList.add('active');
+                currentScreen = 'surveyPage2';
+                saveSessionState();
             });
         }
 
@@ -2611,6 +2865,8 @@ HTML_TEMPLATE = r'''
             .then(() => {
                 document.getElementById('surveyPage2').classList.remove('active');
                 document.getElementById('surveyPage3').classList.add('active');
+                currentScreen = 'surveyPage3';
+                saveSessionState();
             });
         }
 
@@ -2658,6 +2914,8 @@ HTML_TEMPLATE = r'''
             .then(() => {
                 document.getElementById('surveyPage3').classList.remove('active');
                 document.getElementById('thankYouScreen').classList.add('active');
+                currentScreen = 'thankYou';
+                saveSessionState();
             });
         }
 
@@ -2665,6 +2923,33 @@ HTML_TEMPLATE = r'''
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
+        }
+
+        // Autosave session state when comprehension answers change
+        document.querySelectorAll('.comprehension-question input[type="radio"]').forEach(radio => {
+            radio.addEventListener('change', () => {
+                if (currentScreen === 'comprehension') {
+                    saveSessionState();
+                }
+            });
+        });
+
+        // Autosave session state when survey inputs change
+        document.querySelectorAll('.survey-question select, .survey-question input, .survey-question textarea').forEach(el => {
+            el.addEventListener('change', () => {
+                saveSessionState();
+            });
+            el.addEventListener('blur', () => {
+                saveSessionState();
+            });
+        });
+
+        // Autosave strategy description
+        const strategyTextarea = document.getElementById('strategyDescription');
+        if (strategyTextarea) {
+            strategyTextarea.addEventListener('blur', () => {
+                saveSessionState();
+            });
         }
     </script>
 </body>
@@ -3350,6 +3635,88 @@ def save_strategy_description():
     conn.close()
 
     return jsonify({'success': True})
+
+@app.route('/api/save_session_state', methods=['POST'])
+def save_session_state():
+    data = request.json
+    team_id = data.get('team_id')
+    participant_id = data.get('participant_id')
+    current_screen = data.get('current_screen')
+    comprehension_answers = data.get('comprehension_answers')
+    comprehension_attempts = data.get('comprehension_attempts')
+    survey1_data = data.get('survey1_data')
+    survey2_data = data.get('survey2_data')
+    survey3_data = data.get('survey3_data')
+    strategy_data = data.get('strategy_data')
+
+    if not team_id or not participant_id or not current_screen:
+        return jsonify({'error': 'Team ID, Participant ID, and current_screen required'}), 400
+
+    # Validate participant_id
+    if participant_id not in ['1', '2']:
+        return jsonify({'error': 'Invalid participant_id'}), 400
+
+    conn = sqlite3.connect('study_data.db')
+    c = conn.cursor()
+
+    # Use INSERT OR REPLACE to update if exists
+    c.execute('''
+        INSERT OR REPLACE INTO session_state
+        (team_id, participant_id, current_screen, comprehension_answers, comprehension_attempts,
+         survey1_data, survey2_data, survey3_data, strategy_data, last_updated)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ''', (team_id, participant_id, current_screen,
+          json.dumps(comprehension_answers) if comprehension_answers else None,
+          json.dumps(comprehension_attempts) if comprehension_attempts else None,
+          json.dumps(survey1_data) if survey1_data else None,
+          json.dumps(survey2_data) if survey2_data else None,
+          json.dumps(survey3_data) if survey3_data else None,
+          json.dumps(strategy_data) if strategy_data else None))
+    conn.commit()
+    conn.close()
+
+    return jsonify({'success': True})
+
+@app.route('/api/get_session_state/<team_id>/<participant_id>', methods=['GET'])
+def get_session_state(team_id, participant_id):
+    # Validate participant_id
+    if participant_id not in ['1', '2']:
+        return jsonify({'error': 'Invalid participant_id'}), 400
+
+    conn = sqlite3.connect('study_data.db')
+    c = conn.cursor()
+
+    # Check if the session has been submitted (final state)
+    c.execute('SELECT submitted FROM teams WHERE team_id = ?', (team_id,))
+    team_row = c.fetchone()
+
+    # Get session state
+    c.execute('''
+        SELECT current_screen, comprehension_answers, comprehension_attempts,
+               survey1_data, survey2_data, survey3_data, strategy_data, last_updated
+        FROM session_state
+        WHERE team_id = ? AND participant_id = ?
+    ''', (team_id, participant_id))
+    row = c.fetchone()
+    conn.close()
+
+    if not row:
+        return jsonify({'exists': False})
+
+    result = {
+        'exists': True,
+        'current_screen': row[0],
+        'comprehension_answers': json.loads(row[1]) if row[1] else None,
+        'comprehension_attempts': json.loads(row[2]) if row[2] else None,
+        'survey1_data': json.loads(row[3]) if row[3] else None,
+        'survey2_data': json.loads(row[4]) if row[4] else None,
+        'survey3_data': json.loads(row[5]) if row[5] else None,
+        'strategy_data': json.loads(row[6]) if row[6] else None,
+        'last_updated': row[7],
+        'submitted': bool(team_row[0]) if team_row else False
+    }
+
+    return jsonify(result)
 
 if __name__ == '__main__':
     app.run(debug=True)
