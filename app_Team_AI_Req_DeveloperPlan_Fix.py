@@ -3111,32 +3111,97 @@ def get_all_participants():
     conn = sqlite3.connect('study_data.db')
     c = conn.cursor()
 
-    # Get all teams with participant stage data
-    c.execute('''
-        SELECT team_id,
-               p1_current_stage, p1_last_update,
-               p2_current_stage, p2_last_update
-        FROM teams
-        ORDER BY team_id
-    ''')
-    rows = c.fetchall()
-    conn.close()
+    # Get all teams with heartbeat data
+    c.execute('SELECT team_id, start_time, submitted, p1_last_heartbeat, p2_last_heartbeat FROM teams ORDER BY team_id')
+    team_rows = c.fetchall()
 
     teams = []
-    for row in rows:
-        team_data = {
-            'team_id': row[0],
-            'p1': {
-                'stage': row[1] or 'login',
-                'last_update': row[2]
-            } if row[1] or row[2] else None,
-            'p2': {
-                'stage': row[3] or 'login',
-                'last_update': row[4]
-            } if row[3] or row[4] else None
-        }
-        teams.append(team_data)
+    for team_row in team_rows:
+        team_id = team_row[0]
+        main_session_started = team_row[1] is not None
+        submitted = team_row[2] == 1
+        p1_heartbeat = team_row[3]
+        p2_heartbeat = team_row[4]
 
+        team_data = {
+            'team_id': team_id,
+            'p1': None,
+            'p2': None
+        }
+
+        # Check each participant
+        for participant_id in ['1', '2']:
+            # Get heartbeat for this participant
+            participant_heartbeat = p1_heartbeat if participant_id == '1' else p2_heartbeat
+            # Check comprehension
+            c.execute('SELECT timestamp FROM comprehension_attempts WHERE team_id = ? AND participant_id = ? ORDER BY timestamp DESC LIMIT 1',
+                     (team_id, participant_id))
+            comp_row = c.fetchone()
+            comprehension_done = comp_row is not None
+
+            # Check surveys
+            c.execute('SELECT timestamp FROM survey_page1 WHERE team_id = ? AND participant_id = ? ORDER BY timestamp DESC LIMIT 1',
+                     (team_id, participant_id))
+            survey1_row = c.fetchone()
+            survey_page1_done = survey1_row is not None
+
+            c.execute('SELECT timestamp FROM strategy_descriptions WHERE team_id = ? AND participant_id = ? ORDER BY timestamp DESC LIMIT 1',
+                     (team_id, participant_id))
+            strategy_row = c.fetchone()
+            strategy_description_done = strategy_row is not None
+
+            c.execute('SELECT timestamp FROM survey_page2 WHERE team_id = ? AND participant_id = ? ORDER BY timestamp DESC LIMIT 1',
+                     (team_id, participant_id))
+            survey2_row = c.fetchone()
+            survey_page2_done = survey2_row is not None
+
+            c.execute('SELECT timestamp FROM survey_page3 WHERE team_id = ? AND participant_id = ? ORDER BY timestamp DESC LIMIT 1',
+                     (team_id, participant_id))
+            survey3_row = c.fetchone()
+            survey_page3_done = survey3_row is not None
+
+            # Determine current stage based on progress
+            stage = None
+            last_update = None
+
+            if survey_page3_done:
+                stage = 'completed'
+                last_update = survey3_row[0]
+            elif survey_page2_done:
+                stage = 'survey_page3'
+                last_update = survey2_row[0]
+            elif strategy_description_done:
+                stage = 'survey_page2'
+                last_update = strategy_row[0]
+            elif survey_page1_done:
+                stage = 'strategy_page'
+                last_update = survey1_row[0]
+            elif submitted:
+                stage = 'survey_page1'
+                last_update = None
+            elif comprehension_done and main_session_started:
+                stage = 'main_session'
+                last_update = comp_row[0]
+            elif comprehension_done:
+                stage = 'wait_screen'
+                last_update = comp_row[0]
+            elif participant_heartbeat:
+                # Participant has logged in (has heartbeat) but hasn't completed comprehension
+                stage = 'comprehension'
+                last_update = participant_heartbeat
+
+            # Only include participant if they have some activity (stage is set or heartbeat exists)
+            if stage:
+                team_data[f'p{participant_id}'] = {
+                    'stage': stage,
+                    'last_update': last_update
+                }
+
+        # Only include team if at least one participant has activity
+        if team_data['p1'] or team_data['p2']:
+            teams.append(team_data)
+
+    conn.close()
     return jsonify({'teams': teams})
 
 @app.route('/api/start_session', methods=['POST'])
