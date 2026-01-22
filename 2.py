@@ -143,6 +143,18 @@ def init_db():
             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS participant_progress (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            team_id TEXT NOT NULL,
+            participant_id TEXT NOT NULL,
+            current_screen TEXT DEFAULT 'login',
+            comprehension_answers TEXT,
+            comprehension_attempts TEXT,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(team_id, participant_id)
+        )
+    ''')
 
     # Add approval columns if they don't exist (migration for multi-worker fix)
     try:
@@ -1682,9 +1694,14 @@ HTML_TEMPLATE = r'''
             if (incorrectQuestions.length > 0) {
                 // Show hints modal
                 showHints(incorrectQuestions);
+                // Save progress with current attempts
+                saveProgress('comprehension');
             } else {
                 // All correct! Save attempts to database
                 saveComprehensionAttempts();
+
+                // Save progress
+                saveProgress('waitScreen1');
 
                 // Proceed to wait screen
                 document.getElementById('comprehensionScreen').classList.remove('active');
@@ -1750,6 +1767,9 @@ HTML_TEMPLATE = r'''
             })
             .then(response => response.json())
             .then(data => {
+                // Save progress
+                saveProgress('mainContainer');
+
                 // Hide wait screen and show main container
                 document.getElementById('waitScreen1').classList.remove('active');
                 document.getElementById('mainContainer').classList.add('active');
@@ -1873,10 +1893,192 @@ HTML_TEMPLATE = r'''
             document.getElementById('mainContainer').classList.add('active');
         }
 
+        function saveProgress(screen) {
+            fetch(API_BASE + '/api/save_progress', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    team_id: teamId,
+                    participant_id: participantId,
+                    current_screen: screen,
+                    comprehension_answers: questionsCorrect,
+                    comprehension_attempts: comprehensionAttempts
+                })
+            }).catch(err => console.error('Error saving progress:', err));
+        }
+
+        function restoreTypingMetrics(metrics) {
+            if (!metrics) return;
+
+            // Restore title metrics
+            if (metrics.title) {
+                typingMetrics.title.keystrokeCount = metrics.title.keystrokeCount || 0;
+                typingMetrics.title.activeTypingSeconds = metrics.title.activeTypingSeconds || 0;
+                typingMetrics.title.firstEditTime = metrics.title.firstEditTime || null;
+                typingMetrics.title.lastEditTime = metrics.title.lastEditTime || null;
+            }
+
+            // Restore description metrics
+            if (metrics.description) {
+                typingMetrics.description.keystrokeCount = metrics.description.keystrokeCount || 0;
+                typingMetrics.description.activeTypingSeconds = metrics.description.activeTypingSeconds || 0;
+                typingMetrics.description.firstEditTime = metrics.description.firstEditTime || null;
+                typingMetrics.description.lastEditTime = metrics.description.lastEditTime || null;
+            }
+
+            console.log('[Restore] Typing metrics restored:', typingMetrics);
+        }
+
+        function restoreComprehensionState(answers, attempts) {
+            // Restore which questions have been answered correctly
+            if (answers) {
+                Object.keys(answers).forEach(q => {
+                    questionsCorrect[q] = answers[q];
+                });
+            }
+
+            // Restore attempt counts
+            if (attempts) {
+                Object.keys(attempts).forEach(q => {
+                    comprehensionAttempts[q] = attempts[q];
+                });
+            }
+
+            console.log('[Restore] Comprehension state restored - correct:', questionsCorrect, 'attempts:', comprehensionAttempts);
+        }
+
+        function goToScreen(screenId) {
+            // Hide all screens
+            const screens = ['loginScreen', 'comprehensionScreen', 'waitScreen1', 'mainContainer',
+                           'waitScreen', 'surveyPage1', 'strategyPage', 'surveyPage2', 'surveyPage3', 'thankYouScreen'];
+
+            screens.forEach(s => {
+                const el = document.getElementById(s);
+                if (el) {
+                    if (s === 'loginScreen') {
+                        el.style.display = 'none';
+                    } else {
+                        el.classList.remove('active');
+                    }
+                    if (s === 'mainContainer') {
+                        el.style.display = 'none';
+                    }
+                }
+            });
+
+            // Show target screen
+            const target = document.getElementById(screenId);
+            if (target) {
+                if (screenId === 'loginScreen') {
+                    target.style.display = 'flex';
+                } else if (screenId === 'mainContainer') {
+                    target.style.display = 'flex';
+                    target.classList.add('active');
+                } else {
+                    target.classList.add('active');
+                }
+            }
+        }
+
+        function restoreSession(progressData) {
+            console.log('[Restore] Restoring session with data:', progressData);
+
+            // Restore comprehension state
+            restoreComprehensionState(progressData.comprehension_answers, progressData.comprehension_attempts);
+
+            // Restore typing metrics
+            if (progressData.typing_metrics) {
+                restoreTypingMetrics(progressData.typing_metrics);
+            }
+
+            let targetScreen = progressData.current_screen;
+
+            // Determine the correct screen based on completion status
+            if (progressData.survey3_completed) {
+                targetScreen = 'thankYouScreen';
+            } else if (progressData.survey2_completed) {
+                targetScreen = 'surveyPage3';
+            } else if (progressData.strategy_completed) {
+                targetScreen = 'surveyPage2';
+            } else if (progressData.survey1_completed) {
+                targetScreen = 'strategyPage';
+            } else if (progressData.submitted) {
+                targetScreen = 'waitScreen';
+            } else if (progressData.team_started && progressData.comprehension_saved) {
+                targetScreen = 'mainContainer';
+            } else if (progressData.comprehension_saved) {
+                targetScreen = 'waitScreen1';
+            }
+
+            console.log('[Restore] Target screen:', targetScreen);
+
+            // Set team info display
+            document.getElementById('teamInfo').textContent = `Team: ${teamId} | You: ${participantId}`;
+
+            // Navigate to the appropriate screen
+            if (targetScreen === 'comprehension') {
+                goToScreen('comprehensionScreen');
+                saveProgress('comprehension');
+            } else if (targetScreen === 'waitScreen1') {
+                goToScreen('waitScreen1');
+            } else if (targetScreen === 'mainContainer') {
+                // Start the main session
+                startMainSession();
+            } else if (targetScreen === 'waitScreen') {
+                goToScreen('waitScreen');
+            } else if (targetScreen === 'surveyPage1') {
+                goToScreen('surveyPage1');
+            } else if (targetScreen === 'strategyPage') {
+                goToScreen('strategyPage');
+            } else if (targetScreen === 'surveyPage2') {
+                goToScreen('surveyPage2');
+            } else if (targetScreen === 'surveyPage3') {
+                goToScreen('surveyPage3');
+            } else if (targetScreen === 'thankYouScreen') {
+                goToScreen('thankYouScreen');
+            } else {
+                // Default to comprehension screen
+                goToScreen('comprehensionScreen');
+                saveProgress('comprehension');
+            }
+        }
+
+        function startMainSession() {
+            // This is called when restoring to main session or starting fresh
+            goToScreen('mainContainer');
+
+            // Disable the other participant's checkbox
+            const otherParticipant = participantId === '1' ? '2' : '1';
+            const otherCheckbox = document.getElementById(`approval${otherParticipant}`);
+            const otherContainer = document.getElementById(`approval${otherParticipant}Container`);
+
+            otherCheckbox.disabled = true;
+            otherContainer.classList.add('disabled');
+
+            loadMessages();
+            loadIdeas();
+            loadFinalIdea();
+            loadApprovals();
+
+            // Start timer and online status updates
+            startTimer();
+            updateOnlineStatus();
+            sendHeartbeat();
+
+            pollInterval = setInterval(() => {
+                loadMessages();
+                loadIdeas();
+                loadFinalIdea();
+                loadApprovals();
+                updateOnlineStatus();
+                sendHeartbeat();
+            }, 2000);
+        }
+
         function startStudy() {
             const teamInput = document.getElementById('teamId').value.trim();
             const participantInput = document.getElementById('participantId').value.trim();
-            
+
             if (!teamInput || !participantInput) {
                 alert('Please enter both Team ID and Participant ID');
                 return;
@@ -1897,11 +2099,32 @@ HTML_TEMPLATE = r'''
             teamId = teamInput;
             participantId = participantInput;
 
-            // Go to comprehension screen (don't start session/timer yet)
-            // Timer will only start when participant clicks Continue on wait screen
-            document.getElementById('loginScreen').style.display = 'none';
-            document.getElementById('comprehensionScreen').classList.add('active');
-            document.getElementById('teamInfo').textContent = `Team: ${teamId} | You: ${participantId}`;
+            // Check for existing progress
+            fetch(API_BASE + `/api/get_progress/${teamId}/${participantId}`)
+                .then(response => response.json())
+                .then(progressData => {
+                    console.log('[Progress] Retrieved progress:', progressData);
+
+                    if (progressData.has_progress || progressData.team_started ||
+                        progressData.comprehension_saved || progressData.survey1_completed) {
+                        // Has existing progress, restore session
+                        restoreSession(progressData);
+                    } else {
+                        // No progress, start fresh
+                        document.getElementById('loginScreen').style.display = 'none';
+                        document.getElementById('comprehensionScreen').classList.add('active');
+                        document.getElementById('teamInfo').textContent = `Team: ${teamId} | You: ${participantId}`;
+                        saveProgress('comprehension');
+                    }
+                })
+                .catch(err => {
+                    console.error('[Progress] Error getting progress:', err);
+                    // On error, start fresh
+                    document.getElementById('loginScreen').style.display = 'none';
+                    document.getElementById('comprehensionScreen').classList.add('active');
+                    document.getElementById('teamInfo').textContent = `Team: ${teamId} | You: ${participantId}`;
+                    saveProgress('comprehension');
+                });
         }
 
         function loadMessages() {
@@ -2383,6 +2606,7 @@ HTML_TEMPLATE = r'''
                         console.log('[Approval] Session submitted, redirecting to wait screen');
                         clearInterval(pollInterval);
                         clearInterval(timerInterval);
+                        saveProgress('waitScreen');
                         document.getElementById('mainContainer').style.display = 'none';
                         document.getElementById('waitScreen').classList.add('active');
                         return;
@@ -2488,7 +2712,10 @@ HTML_TEMPLATE = r'''
                     // Stop timer and polling
                     clearInterval(pollInterval);
                     clearInterval(timerInterval);
-                    
+
+                    // Save progress
+                    saveProgress('waitScreen');
+
                     // Go to wait screen
                     document.getElementById('mainContainer').style.display = 'none';
                     document.getElementById('waitScreen').classList.add('active');
@@ -2498,6 +2725,7 @@ HTML_TEMPLATE = r'''
 
         // Survey navigation functions
         function goToSurveyPage1() {
+            saveProgress('surveyPage1');
             document.getElementById('waitScreen').classList.remove('active');
             document.getElementById('surveyPage1').classList.add('active');
         }
@@ -2539,6 +2767,7 @@ HTML_TEMPLATE = r'''
                 })
             })
             .then(() => {
+                saveProgress('strategyPage');
                 document.getElementById('surveyPage1').classList.remove('active');
                 document.getElementById('strategyPage').classList.add('active');
             });
@@ -2563,6 +2792,7 @@ HTML_TEMPLATE = r'''
                 })
             })
             .then(() => {
+                saveProgress('surveyPage2');
                 document.getElementById('strategyPage').classList.remove('active');
                 document.getElementById('surveyPage2').classList.add('active');
             });
@@ -2609,6 +2839,7 @@ HTML_TEMPLATE = r'''
                 })
             })
             .then(() => {
+                saveProgress('surveyPage3');
                 document.getElementById('surveyPage2').classList.remove('active');
                 document.getElementById('surveyPage3').classList.add('active');
             });
@@ -2656,6 +2887,7 @@ HTML_TEMPLATE = r'''
                 })
             })
             .then(() => {
+                saveProgress('thankYou');
                 document.getElementById('surveyPage3').classList.remove('active');
                 document.getElementById('thankYouScreen').classList.add('active');
             });
@@ -3346,6 +3578,128 @@ def save_strategy_description():
         INSERT INTO strategy_descriptions (team_id, participant_id, strategy_description)
         VALUES (?, ?, ?)
     ''', (team_id, participant_id, strategy_description))
+    conn.commit()
+    conn.close()
+
+    return jsonify({'success': True})
+
+@app.route('/api/get_progress/<team_id>/<participant_id>', methods=['GET'])
+def get_progress(team_id, participant_id):
+    """Get participant's current progress for session restoration"""
+    if participant_id not in ['1', '2']:
+        return jsonify({'error': 'Invalid participant_id'}), 400
+
+    conn = sqlite3.connect('study_data.db')
+    c = conn.cursor()
+
+    # Get progress from participant_progress table
+    c.execute('''
+        SELECT current_screen, comprehension_answers, comprehension_attempts
+        FROM participant_progress
+        WHERE team_id = ? AND participant_id = ?
+    ''', (team_id, participant_id))
+    progress_row = c.fetchone()
+
+    # Check if team exists and has started
+    c.execute('SELECT start_time, submitted FROM teams WHERE team_id = ?', (team_id,))
+    team_row = c.fetchone()
+
+    # Get typing metrics for this participant
+    c.execute(f'''
+        SELECT p{participant_id}_title_keystroke_count,
+               p{participant_id}_title_active_typing_seconds,
+               p{participant_id}_title_first_edit_time,
+               p{participant_id}_title_last_edit_time,
+               p{participant_id}_description_keystroke_count,
+               p{participant_id}_description_active_typing_seconds,
+               p{participant_id}_description_first_edit_time,
+               p{participant_id}_description_last_edit_time
+        FROM teams WHERE team_id = ?
+    ''', (team_id,))
+    metrics_row = c.fetchone()
+
+    # Check survey completion status
+    c.execute('SELECT id FROM survey_page1 WHERE team_id = ? AND participant_id = ?', (team_id, participant_id))
+    survey1_completed = c.fetchone() is not None
+
+    c.execute('SELECT id FROM strategy_descriptions WHERE team_id = ? AND participant_id = ?', (team_id, participant_id))
+    strategy_completed = c.fetchone() is not None
+
+    c.execute('SELECT id FROM survey_page2 WHERE team_id = ? AND participant_id = ?', (team_id, participant_id))
+    survey2_completed = c.fetchone() is not None
+
+    c.execute('SELECT id FROM survey_page3 WHERE team_id = ? AND participant_id = ?', (team_id, participant_id))
+    survey3_completed = c.fetchone() is not None
+
+    c.execute('SELECT id FROM comprehension_attempts WHERE team_id = ? AND participant_id = ?', (team_id, participant_id))
+    comprehension_saved = c.fetchone() is not None
+
+    conn.close()
+
+    result = {
+        'has_progress': progress_row is not None,
+        'current_screen': progress_row[0] if progress_row else 'login',
+        'comprehension_answers': json.loads(progress_row[1]) if progress_row and progress_row[1] else {},
+        'comprehension_attempts': json.loads(progress_row[2]) if progress_row and progress_row[2] else {},
+        'team_started': team_row is not None and team_row[0] is not None,
+        'submitted': team_row[1] if team_row else False,
+        'survey1_completed': survey1_completed,
+        'strategy_completed': strategy_completed,
+        'survey2_completed': survey2_completed,
+        'survey3_completed': survey3_completed,
+        'comprehension_saved': comprehension_saved,
+        'typing_metrics': {
+            'title': {
+                'keystrokeCount': metrics_row[0] or 0 if metrics_row else 0,
+                'activeTypingSeconds': metrics_row[1] or 0 if metrics_row else 0,
+                'firstEditTime': metrics_row[2] if metrics_row else None,
+                'lastEditTime': metrics_row[3] if metrics_row else None
+            },
+            'description': {
+                'keystrokeCount': metrics_row[4] or 0 if metrics_row else 0,
+                'activeTypingSeconds': metrics_row[5] or 0 if metrics_row else 0,
+                'firstEditTime': metrics_row[6] if metrics_row else None,
+                'lastEditTime': metrics_row[7] if metrics_row else None
+            }
+        } if metrics_row else None
+    }
+
+    return jsonify(result)
+
+@app.route('/api/save_progress', methods=['POST'])
+def save_progress():
+    """Save participant's current progress"""
+    data = request.json
+    team_id = data.get('team_id')
+    participant_id = data.get('participant_id')
+    current_screen = data.get('current_screen')
+    comprehension_answers = data.get('comprehension_answers', {})
+    comprehension_attempts = data.get('comprehension_attempts', {})
+
+    if not all([team_id, participant_id, current_screen]):
+        return jsonify({'error': 'Missing required fields'}), 400
+
+    if participant_id not in ['1', '2']:
+        return jsonify({'error': 'Invalid participant_id'}), 400
+
+    valid_screens = ['login', 'comprehension', 'waitScreen1', 'mainContainer',
+                     'waitScreen', 'surveyPage1', 'strategyPage', 'surveyPage2',
+                     'surveyPage3', 'thankYou']
+    if current_screen not in valid_screens:
+        return jsonify({'error': 'Invalid screen'}), 400
+
+    conn = sqlite3.connect('study_data.db')
+    c = conn.cursor()
+
+    # Upsert progress
+    c.execute('''
+        INSERT INTO participant_progress (team_id, participant_id, current_screen, comprehension_answers, comprehension_attempts, timestamp)
+        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(team_id, participant_id)
+        DO UPDATE SET current_screen = ?, comprehension_answers = ?, comprehension_attempts = ?, timestamp = CURRENT_TIMESTAMP
+    ''', (team_id, participant_id, current_screen, json.dumps(comprehension_answers), json.dumps(comprehension_attempts),
+          current_screen, json.dumps(comprehension_answers), json.dumps(comprehension_attempts)))
+
     conn.commit()
     conn.close()
 
