@@ -395,8 +395,8 @@ HTML_TEMPLATE = r'''
             font-size: 10px;
             color: #6b7280;
             font-weight: normal;
-            line-height: 1.4;
-            padding-top: 4px;
+            line-height: 1.6;
+            margin-left: 10px;
         }
 
         .right-panel {
@@ -593,10 +593,10 @@ HTML_TEMPLATE = r'''
             color: #333;
             margin-bottom: 15px;
             flex-shrink: 0;
-            display: flex;
-            flex-wrap: wrap;
-            align-items: flex-start;
-            gap: 8px;
+        }
+
+        .ideas-header > span:first-child {
+            white-space: nowrap;
         }
 
         .ideas-list {
