@@ -391,6 +391,13 @@ HTML_TEMPLATE = r'''
             background: #10b981;
         }
 
+        .sync-info {
+            font-size: 10px;
+            color: #6b7280;
+            max-width: 280px;
+            line-height: 1.2;
+        }
+
         .right-panel {
             width: 50%;
             display: flex;
@@ -1301,6 +1308,7 @@ HTML_TEMPLATE = r'''
                             <span>P2</span>
                         </div>
                     </div>
+                    <div class="sync-info">Syncing the Final Idea text between team members may take a few seconds. Please wait while it updates. You may click outside the text area if it is taking too long.</div>
                 </div>
             </div>
             <div class="chat-header">
