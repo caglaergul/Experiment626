@@ -394,8 +394,8 @@ HTML_TEMPLATE = r'''
         .sync-info {
             font-size: 10px;
             color: #6b7280;
-            max-width: 280px;
-            line-height: 1.2;
+            font-weight: normal;
+            margin-left: 8px;
         }
 
         .right-panel {
@@ -1308,7 +1308,6 @@ HTML_TEMPLATE = r'''
                             <span>P2</span>
                         </div>
                     </div>
-                    <div class="sync-info">Syncing the Final Idea text between team members may take a few seconds. Please wait while it updates. You may click outside the text area if it is taking too long.</div>
                 </div>
             </div>
             <div class="chat-header">
@@ -1341,7 +1340,7 @@ HTML_TEMPLATE = r'''
             </div>
 
             <div class="final-section">
-                <div class="ideas-header">Final Idea <span id="modeLabel" style="color: #10b981; font-weight: 600;">(Editing Mode)</span></div>
+                <div class="ideas-header">Final Idea <span id="modeLabel" style="color: #10b981; font-weight: 600;">(Editing Mode)</span> <span class="sync-info">Syncing the Final Idea text between team members may take a few seconds. Please wait while it updates. You may click outside the text area if it is taking too long.</span></div>
                 
                 <div class="final-input-group">
                     <label class="final-input-label">
