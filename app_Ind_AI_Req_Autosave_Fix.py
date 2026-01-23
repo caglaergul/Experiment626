@@ -125,6 +125,14 @@ def init_db():
             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS waiting_states (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            participant_id TEXT NOT NULL UNIQUE,
+            waiting_screen TEXT NOT NULL,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
     conn.commit()
     conn.close()
 
@@ -1684,6 +1692,16 @@ HTML_TEMPLATE = r'''
                 // All correct! Save attempts to database
                 saveComprehensionAttempts();
 
+                // Save waiting state for autosave functionality
+                fetch(API_BASE + '/api/save_waiting_state', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        participant_id: participantId,
+                        waiting_screen: 'waiting_1'
+                    })
+                });
+
                 // Proceed to wait screen
                 document.getElementById('comprehensionScreen').classList.remove('active');
                 document.getElementById('waitScreen1').classList.add('active');
@@ -1770,6 +1788,13 @@ HTML_TEMPLATE = r'''
         }
 
         function goToMainSession() {
+            // Clear waiting state when leaving wait screen
+            fetch(API_BASE + '/api/clear_waiting_state', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({participant_id: participantId})
+            });
+
             // Start the session and timer NOW
             fetch(API_BASE + '/api/start_session', {
                 method: 'POST',
@@ -1916,9 +1941,15 @@ HTML_TEMPLATE = r'''
                         } else if (stage === 'survey_page1') {
                             // Resume at survey page 1
                             document.getElementById('surveyPage1').classList.add('active');
+                        } else if (stage === 'waiting_2') {
+                            // Resume at wait screen 2 (after submission)
+                            document.getElementById('waitScreen').classList.add('active');
                         } else if (stage === 'main_session') {
                             // Resume main session - load data and start
                             goToMainSession();
+                        } else if (stage === 'waiting_1') {
+                            // Resume at wait screen 1 (after comprehension)
+                            document.getElementById('waitScreen1').classList.add('active');
                         } else {
                             // Start from comprehension (default for new participants)
                             document.getElementById('comprehensionScreen').classList.add('active');
@@ -2405,7 +2436,17 @@ HTML_TEMPLATE = r'''
                     // Stop timer and polling
                     clearInterval(pollInterval);
                     clearInterval(timerInterval);
-                    
+
+                    // Save waiting state for autosave functionality
+                    fetch(API_BASE + '/api/save_waiting_state', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({
+                            participant_id: participantId,
+                            waiting_screen: 'waiting_2'
+                        })
+                    });
+
                     // Go to wait screen
                     document.getElementById('mainContainer').style.display = 'none';
                     document.getElementById('waitScreen').classList.add('active');
@@ -2415,6 +2456,13 @@ HTML_TEMPLATE = r'''
 
         // Survey navigation functions
         function goToSurveyPage1() {
+            // Clear waiting state when leaving wait screen
+            fetch(API_BASE + '/api/clear_waiting_state', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({participant_id: participantId})
+            });
+
             document.getElementById('waitScreen').classList.remove('active');
             document.getElementById('surveyPage1').classList.add('active');
         }
@@ -3163,7 +3211,7 @@ def save_comprehension_attempts():
 def check_progress(participant_id):
     """
     Check participant progress and return current stage for auto-resume functionality.
-    Stages: login, comprehension, main_session, survey_page1, strategy_page, survey_page2, survey_page3, completed
+    Stages: login, comprehension, waiting_1, main_session, waiting_2, survey_page1, strategy_page, survey_page2, survey_page3, completed
     """
     if not participant_id:
         return jsonify({'error': 'Participant ID required'}), 400
@@ -3173,6 +3221,11 @@ def check_progress(participant_id):
 
     # Use participant_id as team_id for individual sessions
     team_id = participant_id
+
+    # Check if participant is on a waiting screen first
+    c.execute('SELECT waiting_screen FROM waiting_states WHERE participant_id = ?', (participant_id,))
+    waiting_row = c.fetchone()
+    waiting_screen = waiting_row[0] if waiting_row else None
 
     # Check if comprehension was completed
     c.execute('SELECT id FROM comprehension_attempts WHERE participant_id = ?', (participant_id,))
@@ -3200,8 +3253,11 @@ def check_progress(participant_id):
     conn.close()
 
     # Determine current stage based on progress
+    # First check if on a waiting screen
     stage = 'login'
-    if survey_page3_done:
+    if waiting_screen:
+        stage = waiting_screen  # Returns 'waiting_1' or 'waiting_2'
+    elif survey_page3_done:
         stage = 'completed'
     elif survey_page2_done:
         stage = 'survey_page3'
@@ -3214,7 +3270,7 @@ def check_progress(participant_id):
     elif main_session_started:
         stage = 'main_session'
     elif comprehension_done:
-        stage = 'main_session'  # They completed comprehension, should go to main session
+        stage = 'waiting_1'  # They completed comprehension, should go to waiting_1
     else:
         stage = 'comprehension'
 
@@ -3240,6 +3296,47 @@ def save_strategy_description():
         INSERT INTO strategy_descriptions (participant_id, strategy_description)
         VALUES (?, ?)
     ''', (participant_id, strategy_description))
+    conn.commit()
+    conn.close()
+
+    return jsonify({'success': True})
+
+@app.route('/api/save_waiting_state', methods=['POST'])
+def save_waiting_state():
+    """Save participant's waiting screen state for auto-resume functionality."""
+    data = request.json
+    participant_id = data.get('participant_id')
+    waiting_screen = data.get('waiting_screen')  # 'waiting_1' or 'waiting_2'
+
+    if not all([participant_id, waiting_screen]):
+        return jsonify({'error': 'Missing required fields'}), 400
+
+    if waiting_screen not in ['waiting_1', 'waiting_2']:
+        return jsonify({'error': 'Invalid waiting screen'}), 400
+
+    conn = sqlite3.connect('study_data.db')
+    c = conn.cursor()
+    c.execute('''
+        INSERT OR REPLACE INTO waiting_states (participant_id, waiting_screen)
+        VALUES (?, ?)
+    ''', (participant_id, waiting_screen))
+    conn.commit()
+    conn.close()
+
+    return jsonify({'success': True})
+
+@app.route('/api/clear_waiting_state', methods=['POST'])
+def clear_waiting_state():
+    """Clear participant's waiting screen state when they proceed."""
+    data = request.json
+    participant_id = data.get('participant_id')
+
+    if not participant_id:
+        return jsonify({'error': 'Participant ID required'}), 400
+
+    conn = sqlite3.connect('study_data.db')
+    c = conn.cursor()
+    c.execute('DELETE FROM waiting_states WHERE participant_id = ?', (participant_id,))
     conn.commit()
     conn.close()
 
