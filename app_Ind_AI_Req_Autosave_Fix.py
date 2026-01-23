@@ -133,6 +133,23 @@ def init_db():
             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS participant_page_tracking (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            participant_id TEXT NOT NULL,
+            page_name TEXT NOT NULL,
+            entered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            left_at TIMESTAMP
+        )
+    ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS participant_current_page (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            participant_id TEXT NOT NULL UNIQUE,
+            current_page TEXT NOT NULL,
+            entered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
     conn.commit()
     conn.close()
 
@@ -1608,6 +1625,19 @@ HTML_TEMPLATE = r'''
         let timerInterval;
         const API_BASE = window.location.origin;
 
+        // Helper function to track page transitions for experimenter dashboard
+        function trackPage(pageName) {
+            if (!participantId) return;
+            fetch(API_BASE + '/api/track_page', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    participant_id: participantId,
+                    page_name: pageName
+                })
+            }).catch(err => console.error('Error tracking page:', err));
+        }
+
         // Comprehension questions correct answers
         const correctAnswers = {
             q1: 'False',
@@ -1705,6 +1735,7 @@ HTML_TEMPLATE = r'''
                 // Proceed to wait screen
                 document.getElementById('comprehensionScreen').classList.remove('active');
                 document.getElementById('waitScreen1').classList.add('active');
+                trackPage('waiting_1');
             }
         }
 
@@ -1826,6 +1857,7 @@ HTML_TEMPLATE = r'''
 
             document.getElementById('waitScreen1').classList.remove('active');
             document.getElementById('mainContainer').classList.add('active');
+            trackPage('main_session');
         }
 
         function showInstructions() {
@@ -1925,40 +1957,49 @@ HTML_TEMPLATE = r'''
                         // Hide login screen
                         document.getElementById('loginScreen').style.display = 'none';
 
-                        // Redirect to appropriate stage
+                        // Redirect to appropriate stage and track page
                         if (stage === 'completed') {
                             // Already completed, show thank you screen
                             document.getElementById('thankYouScreen').classList.add('active');
+                            trackPage('thank_you');
                         } else if (stage === 'survey_page3') {
                             // Resume at survey page 3
                             document.getElementById('surveyPage3').classList.add('active');
+                            trackPage('survey_page3');
                         } else if (stage === 'survey_page2') {
                             // Resume at survey page 2
                             document.getElementById('surveyPage2').classList.add('active');
+                            trackPage('survey_page2');
                         } else if (stage === 'strategy_page') {
                             // Resume at strategy description page
                             document.getElementById('strategyPage').classList.add('active');
+                            trackPage('strategy_page');
                         } else if (stage === 'survey_page1') {
                             // Resume at survey page 1
                             document.getElementById('surveyPage1').classList.add('active');
+                            trackPage('survey_page1');
                         } else if (stage === 'waiting_2') {
                             // Resume at wait screen 2 (after submission)
                             document.getElementById('waitScreen').classList.add('active');
+                            trackPage('waiting_2');
                         } else if (stage === 'main_session') {
                             // Resume main session - load data and start
                             goToMainSession();
                         } else if (stage === 'waiting_1') {
                             // Resume at wait screen 1 (after comprehension)
                             document.getElementById('waitScreen1').classList.add('active');
+                            trackPage('waiting_1');
                         } else {
                             // Start from comprehension (default for new participants)
                             document.getElementById('comprehensionScreen').classList.add('active');
+                            trackPage('comprehension');
                         }
                     } else {
                         // Error checking progress, start from beginning
                         console.error('Error checking progress:', data.error);
                         document.getElementById('loginScreen').style.display = 'none';
                         document.getElementById('comprehensionScreen').classList.add('active');
+                        trackPage('comprehension');
                     }
                 })
                 .catch(error => {
@@ -1966,6 +2007,7 @@ HTML_TEMPLATE = r'''
                     console.error('Error checking progress:', error);
                     document.getElementById('loginScreen').style.display = 'none';
                     document.getElementById('comprehensionScreen').classList.add('active');
+                    trackPage('comprehension');
                 });
         }
 
@@ -2450,6 +2492,7 @@ HTML_TEMPLATE = r'''
                     // Go to wait screen
                     document.getElementById('mainContainer').style.display = 'none';
                     document.getElementById('waitScreen').classList.add('active');
+                    trackPage('waiting_2');
                 });
             }
         }
@@ -2465,6 +2508,7 @@ HTML_TEMPLATE = r'''
 
             document.getElementById('waitScreen').classList.remove('active');
             document.getElementById('surveyPage1').classList.add('active');
+            trackPage('survey_page1');
         }
 
         function toggleMajorOther() {
@@ -2506,6 +2550,7 @@ HTML_TEMPLATE = r'''
                 if (data.success) {
                     document.getElementById('surveyPage1').classList.remove('active');
                     document.getElementById('strategyPage').classList.add('active');
+                    trackPage('strategy_page');
                 } else {
                     alert('Error saving survey. Please try again.');
                 }
@@ -2532,6 +2577,7 @@ HTML_TEMPLATE = r'''
             .then(() => {
                 document.getElementById('strategyPage').classList.remove('active');
                 document.getElementById('surveyPage2').classList.add('active');
+                trackPage('survey_page2');
             });
         }
 
@@ -2580,6 +2626,7 @@ HTML_TEMPLATE = r'''
                 if (data.success) {
                     document.getElementById('surveyPage2').classList.remove('active');
                     document.getElementById('surveyPage3').classList.add('active');
+                    trackPage('survey_page3');
                 } else {
                     alert('Error saving survey. Please try again.');
                 }
@@ -2632,6 +2679,7 @@ HTML_TEMPLATE = r'''
                 if (data.success) {
                     document.getElementById('surveyPage3').classList.remove('active');
                     document.getElementById('thankYouScreen').classList.add('active');
+                    trackPage('thank_you');
                 } else {
                     alert('Error saving survey. Please try again.');
                 }
@@ -3341,6 +3389,610 @@ def clear_waiting_state():
     conn.close()
 
     return jsonify({'success': True})
+
+@app.route('/api/track_page', methods=['POST'])
+def track_page():
+    """Track participant's current page for the experimenter dashboard."""
+    data = request.json
+    participant_id = data.get('participant_id')
+    page_name = data.get('page_name')
+
+    if not all([participant_id, page_name]):
+        return jsonify({'error': 'Missing required fields'}), 400
+
+    conn = sqlite3.connect('study_data.db')
+    c = conn.cursor()
+
+    # Update the previous page's left_at timestamp
+    c.execute('''
+        UPDATE participant_page_tracking
+        SET left_at = CURRENT_TIMESTAMP
+        WHERE participant_id = ? AND left_at IS NULL
+    ''', (participant_id,))
+
+    # Insert new page tracking record
+    c.execute('''
+        INSERT INTO participant_page_tracking (participant_id, page_name)
+        VALUES (?, ?)
+    ''', (participant_id, page_name))
+
+    # Update current page
+    c.execute('''
+        INSERT OR REPLACE INTO participant_current_page (participant_id, current_page, entered_at)
+        VALUES (?, ?, CURRENT_TIMESTAMP)
+    ''', (participant_id, page_name))
+
+    conn.commit()
+    conn.close()
+
+    return jsonify({'success': True})
+
+@app.route('/api/dashboard_data', methods=['GET'])
+def get_dashboard_data():
+    """Get all participant tracking data for the experimenter dashboard."""
+    conn = sqlite3.connect('study_data.db')
+    c = conn.cursor()
+
+    # Get current page for all participants
+    c.execute('''
+        SELECT participant_id, current_page, entered_at
+        FROM participant_current_page
+        ORDER BY participant_id
+    ''')
+    current_pages = c.fetchall()
+
+    # Get page history for all participants
+    c.execute('''
+        SELECT participant_id, page_name, entered_at, left_at
+        FROM participant_page_tracking
+        ORDER BY participant_id, entered_at
+    ''')
+    page_history = c.fetchall()
+
+    conn.close()
+
+    # Format data
+    participants = {}
+    for row in current_pages:
+        participant_id, current_page, entered_at = row
+        participants[participant_id] = {
+            'current_page': current_page,
+            'entered_at': entered_at,
+            'history': []
+        }
+
+    for row in page_history:
+        participant_id, page_name, entered_at, left_at = row
+        if participant_id not in participants:
+            participants[participant_id] = {
+                'current_page': page_name,
+                'entered_at': entered_at,
+                'history': []
+            }
+        participants[participant_id]['history'].append({
+            'page': page_name,
+            'entered_at': entered_at,
+            'left_at': left_at
+        })
+
+    return jsonify({
+        'success': True,
+        'participants': participants
+    })
+
+# Experimenter Dashboard HTML Template
+DASHBOARD_TEMPLATE = r'''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Experimenter Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f5f5f5;
+            padding: 20px;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px 30px;
+            border-radius: 12px;
+            margin-bottom: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .header h1 {
+            font-size: 24px;
+        }
+        .refresh-info {
+            font-size: 14px;
+            opacity: 0.9;
+        }
+        .stats-bar {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+        .stat-card {
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            flex: 1;
+            text-align: center;
+        }
+        .stat-card h3 {
+            font-size: 32px;
+            color: #667eea;
+            margin-bottom: 5px;
+        }
+        .stat-card p {
+            color: #666;
+            font-size: 14px;
+        }
+        .participants-table {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        .table-header {
+            background: #f8f9fa;
+            padding: 15px 20px;
+            border-bottom: 1px solid #e0e0e0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .table-header h2 {
+            font-size: 18px;
+            color: #333;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            padding: 15px 20px;
+            text-align: left;
+            border-bottom: 1px solid #e0e0e0;
+        }
+        th {
+            background: #f8f9fa;
+            font-weight: 600;
+            color: #555;
+            font-size: 13px;
+            text-transform: uppercase;
+        }
+        tr:hover {
+            background: #f8f9fa;
+        }
+        .page-badge {
+            display: inline-block;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: 500;
+        }
+        .page-login { background: #e0e0e0; color: #555; }
+        .page-comprehension { background: #fff3cd; color: #856404; }
+        .page-waiting_1 { background: #cce5ff; color: #004085; }
+        .page-main_session { background: #d4edda; color: #155724; }
+        .page-waiting_2 { background: #cce5ff; color: #004085; }
+        .page-survey_page1 { background: #e2d5f1; color: #5a3d8a; }
+        .page-strategy_page { background: #f5d5e0; color: #8a3d5a; }
+        .page-survey_page2 { background: #d5e8f1; color: #3d5a8a; }
+        .page-survey_page3 { background: #f1e8d5; color: #8a6d3d; }
+        .page-thank_you { background: #d4edda; color: #155724; }
+        .page-completed { background: #28a745; color: white; }
+        .time-info {
+            font-size: 12px;
+            color: #888;
+        }
+        .history-btn {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 6px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+        .history-btn:hover {
+            background: #5568d3;
+        }
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+        .modal.active {
+            display: flex;
+        }
+        .modal-content {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            max-width: 700px;
+            width: 90%;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        .modal-header h3 {
+            font-size: 20px;
+            color: #333;
+        }
+        .close-btn {
+            background: none;
+            border: none;
+            font-size: 24px;
+            cursor: pointer;
+            color: #999;
+        }
+        .history-timeline {
+            border-left: 3px solid #667eea;
+            padding-left: 20px;
+            margin-left: 10px;
+        }
+        .history-item {
+            position: relative;
+            margin-bottom: 20px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid #eee;
+        }
+        .history-item:last-child {
+            border-bottom: none;
+            margin-bottom: 0;
+        }
+        .history-item::before {
+            content: '';
+            position: absolute;
+            left: -26px;
+            top: 5px;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #667eea;
+        }
+        .history-item .page-name {
+            font-weight: 600;
+            margin-bottom: 5px;
+        }
+        .history-item .time-range {
+            font-size: 12px;
+            color: #888;
+        }
+        .history-item .duration {
+            font-size: 12px;
+            color: #667eea;
+            margin-top: 3px;
+        }
+        .no-participants {
+            text-align: center;
+            padding: 40px;
+            color: #888;
+        }
+        .auto-refresh {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .auto-refresh label {
+            font-size: 14px;
+            color: white;
+        }
+        .toggle-switch {
+            position: relative;
+            width: 50px;
+            height: 26px;
+        }
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(255,255,255,0.3);
+            border-radius: 26px;
+            transition: 0.3s;
+        }
+        .toggle-slider:before {
+            position: absolute;
+            content: "";
+            height: 20px;
+            width: 20px;
+            left: 3px;
+            bottom: 3px;
+            background: white;
+            border-radius: 50%;
+            transition: 0.3s;
+        }
+        .toggle-switch input:checked + .toggle-slider {
+            background: rgba(255,255,255,0.6);
+        }
+        .toggle-switch input:checked + .toggle-slider:before {
+            transform: translateX(24px);
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div>
+            <h1>Experimenter Dashboard</h1>
+            <p class="refresh-info">Last updated: <span id="lastUpdate">-</span></p>
+        </div>
+        <div class="auto-refresh">
+            <label>Auto-refresh (5s)</label>
+            <label class="toggle-switch">
+                <input type="checkbox" id="autoRefresh" checked>
+                <span class="toggle-slider"></span>
+            </label>
+        </div>
+    </div>
+
+    <div class="stats-bar">
+        <div class="stat-card">
+            <h3 id="totalParticipants">0</h3>
+            <p>Total Participants</p>
+        </div>
+        <div class="stat-card">
+            <h3 id="inComprehension">0</h3>
+            <p>In Comprehension</p>
+        </div>
+        <div class="stat-card">
+            <h3 id="inWaiting">0</h3>
+            <p>In Waiting Pages</p>
+        </div>
+        <div class="stat-card">
+            <h3 id="inMainSession">0</h3>
+            <p>In Main Session</p>
+        </div>
+        <div class="stat-card">
+            <h3 id="completed">0</h3>
+            <p>Completed</p>
+        </div>
+    </div>
+
+    <div class="participants-table">
+        <div class="table-header">
+            <h2>Participant Progress</h2>
+        </div>
+        <table>
+            <thead>
+                <tr>
+                    <th>Participant ID</th>
+                    <th>Current Page</th>
+                    <th>Time on Page</th>
+                    <th>Page Entered At</th>
+                    <th>History</th>
+                </tr>
+            </thead>
+            <tbody id="participantsBody">
+                <tr>
+                    <td colspan="5" class="no-participants">No participants yet</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <div class="modal" id="historyModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Page History - Participant <span id="historyParticipantId"></span></h3>
+                <button class="close-btn" onclick="closeHistoryModal()">&times;</button>
+            </div>
+            <div class="history-timeline" id="historyTimeline"></div>
+        </div>
+    </div>
+
+    <script>
+        let participantsData = {};
+        let refreshInterval;
+
+        const pageNames = {
+            'login': 'Login',
+            'comprehension': 'Comprehension Questions',
+            'waiting_1': 'Waiting (Post-Comprehension)',
+            'main_session': 'Main Session',
+            'waiting_2': 'Waiting (Post-Submission)',
+            'survey_page1': 'Survey Page 1',
+            'strategy_page': 'Strategy Description',
+            'survey_page2': 'Survey Page 2',
+            'survey_page3': 'Survey Page 3',
+            'thank_you': 'Thank You',
+            'completed': 'Completed'
+        };
+
+        function formatTime(timestamp) {
+            if (!timestamp) return '-';
+            const date = new Date(timestamp + 'Z');
+            return date.toLocaleTimeString();
+        }
+
+        function formatDateTime(timestamp) {
+            if (!timestamp) return '-';
+            const date = new Date(timestamp + 'Z');
+            return date.toLocaleString();
+        }
+
+        function getTimeOnPage(enteredAt) {
+            if (!enteredAt) return '-';
+            const entered = new Date(enteredAt + 'Z');
+            const now = new Date();
+            const diffMs = now - entered;
+            const diffMins = Math.floor(diffMs / 60000);
+            const diffSecs = Math.floor((diffMs % 60000) / 1000);
+
+            if (diffMins > 0) {
+                return `${diffMins}m ${diffSecs}s`;
+            }
+            return `${diffSecs}s`;
+        }
+
+        function getDuration(enteredAt, leftAt) {
+            if (!enteredAt) return '-';
+            const entered = new Date(enteredAt + 'Z');
+            const left = leftAt ? new Date(leftAt + 'Z') : new Date();
+            const diffMs = left - entered;
+            const diffMins = Math.floor(diffMs / 60000);
+            const diffSecs = Math.floor((diffMs % 60000) / 1000);
+
+            if (diffMins > 0) {
+                return `${diffMins}m ${diffSecs}s`;
+            }
+            return `${diffSecs}s`;
+        }
+
+        function getPageBadgeClass(page) {
+            const pageClass = page.replace(/ /g, '_').toLowerCase();
+            return `page-badge page-${pageClass}`;
+        }
+
+        function loadDashboardData() {
+            fetch('/api/dashboard_data')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        participantsData = data.participants;
+                        updateDashboard();
+                    }
+                })
+                .catch(error => console.error('Error loading dashboard data:', error));
+        }
+
+        function updateDashboard() {
+            const participants = Object.entries(participantsData);
+
+            // Update stats
+            document.getElementById('totalParticipants').textContent = participants.length;
+            document.getElementById('inComprehension').textContent =
+                participants.filter(([_, p]) => p.current_page === 'comprehension').length;
+            document.getElementById('inWaiting').textContent =
+                participants.filter(([_, p]) => p.current_page === 'waiting_1' || p.current_page === 'waiting_2').length;
+            document.getElementById('inMainSession').textContent =
+                participants.filter(([_, p]) => p.current_page === 'main_session').length;
+            document.getElementById('completed').textContent =
+                participants.filter(([_, p]) => p.current_page === 'thank_you' || p.current_page === 'completed').length;
+
+            // Update table
+            const tbody = document.getElementById('participantsBody');
+
+            if (participants.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="5" class="no-participants">No participants yet</td></tr>';
+                return;
+            }
+
+            // Sort by participant ID
+            participants.sort((a, b) => parseInt(a[0]) - parseInt(b[0]));
+
+            tbody.innerHTML = participants.map(([id, p]) => `
+                <tr>
+                    <td><strong>${id}</strong></td>
+                    <td>
+                        <span class="${getPageBadgeClass(p.current_page)}">
+                            ${pageNames[p.current_page] || p.current_page}
+                        </span>
+                    </td>
+                    <td class="time-info">${getTimeOnPage(p.entered_at)}</td>
+                    <td class="time-info">${formatDateTime(p.entered_at)}</td>
+                    <td>
+                        <button class="history-btn" onclick="showHistory('${id}')">
+                            View History (${p.history ? p.history.length : 0})
+                        </button>
+                    </td>
+                </tr>
+            `).join('');
+
+            // Update last update time
+            document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString();
+        }
+
+        function showHistory(participantId) {
+            document.getElementById('historyParticipantId').textContent = participantId;
+            const timeline = document.getElementById('historyTimeline');
+            const participant = participantsData[participantId];
+
+            if (!participant || !participant.history || participant.history.length === 0) {
+                timeline.innerHTML = '<p>No history available</p>';
+            } else {
+                timeline.innerHTML = participant.history.map(h => `
+                    <div class="history-item">
+                        <div class="page-name">
+                            <span class="${getPageBadgeClass(h.page)}">
+                                ${pageNames[h.page] || h.page}
+                            </span>
+                        </div>
+                        <div class="time-range">
+                            Entered: ${formatDateTime(h.entered_at)}
+                            ${h.left_at ? `<br>Left: ${formatDateTime(h.left_at)}` : '<br><em>(Currently here)</em>'}
+                        </div>
+                        <div class="duration">Duration: ${getDuration(h.entered_at, h.left_at)}</div>
+                    </div>
+                `).join('');
+            }
+
+            document.getElementById('historyModal').classList.add('active');
+        }
+
+        function closeHistoryModal() {
+            document.getElementById('historyModal').classList.remove('active');
+        }
+
+        // Auto-refresh toggle
+        document.getElementById('autoRefresh').addEventListener('change', function() {
+            if (this.checked) {
+                refreshInterval = setInterval(loadDashboardData, 5000);
+            } else {
+                clearInterval(refreshInterval);
+            }
+        });
+
+        // Close modal on outside click
+        document.getElementById('historyModal').addEventListener('click', function(e) {
+            if (e.target === this) {
+                closeHistoryModal();
+            }
+        });
+
+        // Initial load
+        loadDashboardData();
+        refreshInterval = setInterval(loadDashboardData, 5000);
+    </script>
+</body>
+</html>
+'''
+
+@app.route('/dashboard')
+def dashboard():
+    """Experimenter dashboard to track participant progress."""
+    return DASHBOARD_TEMPLATE
 
 if __name__ == '__main__':
     app.run(debug=True)
