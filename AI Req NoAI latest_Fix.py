@@ -1,0 +1,3948 @@
+from flask import Flask, request, jsonify, send_file, render_template_string
+from flask_cors import CORS
+import sqlite3
+import json
+from datetime import datetime
+import os
+import csv
+import io
+import time
+
+app = Flask(__name__)
+CORS(app)
+
+# Database setup
+def init_db():
+    conn = sqlite3.connect('study_data.db')
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS teams (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            team_id TEXT NOT NULL,
+            start_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            final_idea TEXT,
+            submitted BOOLEAN DEFAULT 0,
+            submit_time TIMESTAMP,
+            p1_title_keystroke_count INTEGER DEFAULT 0,
+            p1_title_active_typing_seconds REAL DEFAULT 0,
+            p1_title_first_edit_time TIMESTAMP,
+            p1_title_last_edit_time TIMESTAMP,
+            p1_description_keystroke_count INTEGER DEFAULT 0,
+            p1_description_active_typing_seconds REAL DEFAULT 0,
+            p1_description_first_edit_time TIMESTAMP,
+            p1_description_last_edit_time TIMESTAMP,
+            p2_title_keystroke_count INTEGER DEFAULT 0,
+            p2_title_active_typing_seconds REAL DEFAULT 0,
+            p2_title_first_edit_time TIMESTAMP,
+            p2_title_last_edit_time TIMESTAMP,
+            p2_description_keystroke_count INTEGER DEFAULT 0,
+            p2_description_active_typing_seconds REAL DEFAULT 0,
+            p2_description_first_edit_time TIMESTAMP,
+            p2_description_last_edit_time TIMESTAMP,
+            total_title_keystroke_count INTEGER DEFAULT 0,
+            total_title_active_typing_seconds REAL DEFAULT 0,
+            title_first_edit_time TIMESTAMP,
+            title_last_edit_time TIMESTAMP,
+            total_description_keystroke_count INTEGER DEFAULT 0,
+            total_description_active_typing_seconds REAL DEFAULT 0,
+            description_first_edit_time TIMESTAMP,
+            description_last_edit_time TIMESTAMP,
+            UNIQUE(team_id)
+        )
+    ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            team_id TEXT NOT NULL,
+            participant_id TEXT,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            tokens_used INTEGER
+        )
+    ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS ideas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            team_id TEXT NOT NULL,
+            participant_id TEXT NOT NULL,
+            idea_text TEXT NOT NULL,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS survey_page1 (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            team_id TEXT NOT NULL,
+            participant_id TEXT NOT NULL,
+            q1 TEXT,
+            q2 TEXT,
+            q3 TEXT,
+            q4 TEXT,
+            q5 TEXT,
+            q6 TEXT,
+            q7 TEXT,
+            q8 TEXT,
+            q9 TEXT,
+            q10 TEXT,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS survey_page2 (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            team_id TEXT NOT NULL,
+            participant_id TEXT NOT NULL,
+            employment_status TEXT,
+            major_field TEXT,
+            major_other TEXT,
+            age INTEGER,
+            gender TEXT,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS survey_page3 (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            team_id TEXT NOT NULL,
+            participant_id TEXT NOT NULL,
+            first_last_name TEXT,
+            address_line1 TEXT,
+            address_line2 TEXT,
+            city TEXT,
+            state TEXT,
+            postal_code TEXT,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS comprehension_attempts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            team_id TEXT NOT NULL,
+            participant_id TEXT NOT NULL,
+            q1_attempts INTEGER DEFAULT 0,
+            q2_attempts INTEGER DEFAULT 0,
+            q3_attempts INTEGER DEFAULT 0,
+            q4_attempts INTEGER DEFAULT 0,
+            q5_attempts INTEGER DEFAULT 0,
+            q6_attempts INTEGER DEFAULT 0,
+            q7_attempts INTEGER DEFAULT 0,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS strategy_descriptions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            team_id TEXT NOT NULL,
+            participant_id TEXT NOT NULL,
+            strategy_description TEXT,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    # Add approval columns if they don't exist (migration for multi-worker fix)
+    try:
+        c.execute('ALTER TABLE teams ADD COLUMN p1_approved BOOLEAN DEFAULT 0')
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+    try:
+        c.execute('ALTER TABLE teams ADD COLUMN p2_approved BOOLEAN DEFAULT 0')
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+
+    # Add heartbeat columns for online status tracking (multi-worker fix)
+    try:
+        c.execute('ALTER TABLE teams ADD COLUMN p1_last_heartbeat TIMESTAMP')
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+    try:
+        c.execute('ALTER TABLE teams ADD COLUMN p2_last_heartbeat TIMESTAMP')
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+
+    # Add current stage tracking for experimenter dashboard
+    try:
+        c.execute('ALTER TABLE teams ADD COLUMN p1_current_stage TEXT DEFAULT "login"')
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+    try:
+        c.execute('ALTER TABLE teams ADD COLUMN p2_current_stage TEXT DEFAULT "login"')
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+    try:
+        c.execute('ALTER TABLE teams ADD COLUMN p1_last_update TIMESTAMP')
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+    try:
+        c.execute('ALTER TABLE teams ADD COLUMN p2_last_update TIMESTAMP')
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+
+    conn.commit()
+    conn.close()
+
+init_db()
+
+# Store active team sessions
+active_teams = {}
+team_approvals = {}  # Track approvals: {team_id: {1: bool, 2: bool}}
+online_participants = {}  # Track online participants: {team_id: {participant_id: last_heartbeat_time}}
+
+# HTML Template
+HTML_TEMPLATE = r'''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Team Brainstorming Session</title>
+    <style>
+        /* Version 2.6 - Layout Fixes */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f5f5f5;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        .login-screen {
+            min-height: 100vh;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .login-box {
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 500px;
+            width: 100%;
+            padding: 40px;
+        }
+
+        .login-box h1 {
+            color: #333;
+            margin-bottom: 20px;
+            font-size: 28px;
+        }
+
+        .consent-box {
+            background: #f0f7ff;
+            border: 2px solid #3b82f6;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 30px;
+        }
+
+        .consent-box h2 {
+            color: #1e40af;
+            font-size: 18px;
+            margin-bottom: 12px;
+        }
+
+        .consent-box p {
+            color: #1e3a8a;
+            line-height: 1.6;
+            font-size: 14px;
+        }
+
+        .input-group {
+            margin-bottom: 20px;
+        }
+
+        .input-group label {
+            display: block;
+            color: #555;
+            font-weight: 500;
+            margin-bottom: 8px;
+        }
+
+        .input-group input {
+            width: 100%;
+            padding: 12px 16px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 16px;
+        }
+
+        .input-group input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .btn {
+            width: 100%;
+            padding: 14px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+
+        .btn:hover {
+            background: #5568d3;
+        }
+
+        .main-container {
+            display: none;
+            height: 100vh;
+            flex-direction: row;
+        }
+
+        .main-container.active {
+            display: flex;
+        }
+
+        .left-panel {
+            width: 50%;
+            display: flex;
+            flex-direction: column;
+            background: white;
+            border-right: 2px solid #e0e0e0;
+        }
+
+        .instructions-button {
+            background: #10a37f;
+            color: white;
+            border: none;
+            padding: 6px 12px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .instructions-button:hover {
+            background: #0d8a6a;
+        }
+
+        .top-bar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 20px;
+            background: #f8f9fa;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        .left-top-section {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+
+        .timer-display {
+            font-size: 16px;
+            font-weight: 600;
+            color: #333;
+            padding: 6px 12px;
+            background: white;
+            border: 2px solid #e0e0e0;
+            border-radius: 6px;
+        }
+
+        .timer-display.warning {
+            color: #dc2626;
+            border-color: #dc2626;
+        }
+
+        .online-status {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            font-size: 12px;
+        }
+
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            padding: 4px 8px;
+            background: white;
+            border: 1px solid #e0e0e0;
+            border-radius: 4px;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #9ca3af;
+        }
+
+        .status-dot.online {
+            background: #10b981;
+        }
+
+        .right-panel {
+            width: 50%;
+            display: flex;
+            flex-direction: column;
+            background: #fafafa;
+        }
+
+        .chat-header {
+            background: #667eea;
+            color: white;
+            padding: 20px;
+        }
+
+        .chat-header h2 {
+            font-size: 20px;
+        }
+
+        .team-info {
+            font-size: 14px;
+            opacity: 0.9;
+            margin-top: 5px;
+        }
+
+        .messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            background: #f9fafb;
+        }
+
+        .message {
+            margin-bottom: 16px;
+            display: flex;
+            gap: 12px;
+        }
+
+        .message.user {
+            flex-direction: row-reverse;
+        }
+
+        .message-avatar {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+            flex-shrink: 0;
+            overflow: hidden;
+        }
+
+        .message-avatar img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .message.user .message-avatar {
+            background: #667eea;
+            color: white;
+        }
+
+        .message.assistant .message-avatar {
+            background: #10a37f;
+            padding: 0;
+        }
+
+        .message-content {
+            max-width: 70%;
+            padding: 12px 16px;
+            border-radius: 12px;
+            line-height: 1.6;
+        }
+
+        .message-content strong {
+            font-weight: 600;
+        }
+
+        .message-content ul, .message-content ol {
+            margin: 16px 0 !important;
+            padding-left: 28px !important;
+            display: block !important;
+        }
+
+        .message-content li {
+            margin: 8px 0 !important;
+            display: list-item !important;
+            line-height: 1.6 !important;
+        }
+        
+        .message-content li::marker {
+            font-weight: bold;
+        }
+
+        .message-content p {
+            margin: 8px 0;
+        }
+
+        .message.user .message-content {
+            background: #667eea;
+            color: white;
+        }
+
+        .message.assistant .message-content {
+            background: white;
+            color: #333;
+            border: 1px solid #e5e7eb;
+        }
+
+        .message-meta {
+            font-size: 11px;
+            color: #999;
+            margin-top: 4px;
+        }
+
+        .typing-indicator {
+            display: none;
+            padding: 12px 16px;
+            background: white;
+            border-radius: 12px;
+            border: 1px solid #e5e7eb;
+            width: fit-content;
+            margin: 10px 20px;
+        }
+
+        .typing-indicator.active {
+            display: block;
+        }
+
+        .typing-indicator span {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #999;
+            margin-right: 4px;
+            animation: typing 1.4s infinite;
+        }
+
+        .typing-indicator span:nth-child(2) {
+            animation-delay: 0.2s;
+        }
+
+        .typing-indicator span:nth-child(3) {
+            animation-delay: 0.4s;
+        }
+
+        @keyframes typing {
+            0%, 60%, 100% { transform: translateY(0); }
+            30% { transform: translateY(-10px); }
+        }
+
+        .input-area {
+            padding: 20px;
+            background: white;
+            border-top: 1px solid #e5e7eb;
+            display: flex;
+            gap: 12px;
+        }
+
+        .input-area input {
+            flex: 1;
+            padding: 12px 16px;
+            border: 2px solid #e5e7eb;
+            border-radius: 8px;
+            font-size: 15px;
+        }
+
+        .send-btn {
+            padding: 12px 24px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+        }
+
+        .ideas-section {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            padding: 20px;
+            overflow: hidden;
+        }
+
+        .ideas-header {
+            font-size: 18px;
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 15px;
+            flex-shrink: 0;
+        }
+
+        .ideas-list {
+            flex: 1;
+            overflow-y: auto;
+            background: white;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 10px;
+        }
+
+        .idea-item {
+            background: #f0f7ff;
+            padding: 10px;
+            border-radius: 6px;
+            margin-bottom: 10px;
+            border-left: 3px solid #667eea;
+        }
+
+        .idea-meta {
+            font-size: 11px;
+            color: #666;
+            margin-bottom: 5px;
+        }
+
+        .idea-input {
+            width: 100%;
+            padding: 6px 8px;
+            border: 2px solid #e0e0e0;
+            border-radius: 4px;
+            font-size: 13px;
+            margin-bottom: 6px;
+            flex-shrink: 0;
+        }
+
+        .final-input-group {
+            margin-bottom: 8px;
+        }
+
+        .final-input-label {
+            font-weight: 600;
+            font-size: 13px;
+            color: #555;
+            margin-bottom: 4px;
+            display: block;
+        }
+
+        .word-counter {
+            font-size: 11px;
+            color: #999;
+            font-weight: normal;
+        }
+
+        .word-counter.warning {
+            color: #ef4444;
+            font-weight: 600;
+        }
+
+        .final-title-input {
+            width: 100%;
+            padding: 8px;
+            border: 2px solid #e0e0e0;
+            border-radius: 6px;
+            font-size: 13px;
+        }
+
+        .final-title-input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .final-description-textarea {
+            width: 100%;
+            min-height: 50px;
+            max-height: 50px;
+            padding: 8px;
+            border: 2px solid #e0e0e0;
+            border-radius: 6px;
+            font-size: 13px;
+            font-family: inherit;
+            resize: none;
+        }
+
+        .final-description-textarea:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .add-idea-btn {
+            padding: 10px 20px;
+            background: #10b981;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+            flex-shrink: 0;
+        }
+
+        .final-section {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            padding: 10px;
+            overflow-y: visible;
+            height: 70%;
+        }
+
+        .final-textarea {
+            flex: 1;
+            padding: 15px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 15px;
+            resize: none;
+            margin-bottom: 15px;
+            font-family: inherit;
+            overflow-y: auto;
+        }
+
+        .submit-btn {
+            padding: 8px;
+            background: #ef4444;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            flex-shrink: 0;
+            margin-top: 6px;
+        }
+
+        .submit-btn:hover:not(:disabled) {
+            background: #dc2626;
+        }
+
+        .submit-btn:disabled {
+            background: #9ca3af;
+            cursor: not-allowed;
+            opacity: 0.6;
+        }
+
+        .approval-section {
+            margin: 8px 0 6px 0;
+            padding: 6px 10px;
+            background: #f0f9ff;
+            border: 1px solid #3b82f6;
+            border-radius: 4px;
+            flex-shrink: 0;
+        }
+
+        .approval-header {
+            font-weight: 600;
+            color: #1e40af;
+            margin-bottom: 4px;
+            font-size: 11px;
+        }
+
+        .approval-checkboxes {
+            display: flex;
+            flex-direction: row;
+            gap: 12px;
+        }
+
+        .approval-item {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            padding: 4px 8px;
+            background: white;
+            border-radius: 3px;
+            border: 1px solid #e5e7eb;
+        }
+
+        .approval-item input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            cursor: pointer;
+            margin: 0;
+        }
+
+        .approval-item input[type="checkbox"]:disabled {
+            cursor: not-allowed;
+            opacity: 0.5;
+        }
+
+        .approval-item label {
+            cursor: pointer;
+            font-size: 12px;
+            margin: 0;
+        }
+
+        .approval-item.disabled label {
+            cursor: not-allowed;
+            opacity: 0.5;
+        }
+
+        .thank-you-screen {
+            display: none;
+            min-height: 100vh;
+            background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+            padding: 40px;
+        }
+
+        .thank-you-screen.active {
+            display: flex;
+        }
+
+        .thank-you-box {
+            background: white;
+            border-radius: 16px;
+            padding: 60px;
+            max-width: 600px;
+        }
+
+        .thank-you-box h1 {
+            font-size: 36px;
+            color: #333;
+            margin-bottom: 20px;
+        }
+
+        .thank-you-box p {
+            font-size: 18px;
+            color: #666;
+            line-height: 1.6;
+        }
+
+        .instructions-screen {
+            display: none;
+            min-height: 100vh;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            justify-content: center;
+            align-items: center;
+            padding: 40px;
+        }
+
+        .instructions-screen.active {
+            display: flex;
+        }
+
+        .instructions-box {
+            background: white;
+            border-radius: 16px;
+            padding: 50px;
+            max-width: 800px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-height: 90vh;
+            overflow-y: auto;
+            cursor: default;
+        }
+
+        .instructions-box h1 {
+            font-size: 32px;
+            color: #333;
+            margin-bottom: 30px;
+            text-align: center;
+        }
+
+        .instructions-box p {
+            font-size: 18px;
+            color: #444;
+            line-height: 1.8;
+            margin-bottom: 20px;
+        }
+
+        .go-back-btn {
+            display: block;
+            width: 200px;
+            margin: 30px auto 0;
+            padding: 14px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .go-back-btn:hover {
+            background: #5568d3;
+        }
+
+        /* Survey and Wait Screens */
+        .wait-screen, .survey-screen, .comprehension-screen {
+            display: none;
+            min-height: 100vh;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            justify-content: center;
+            align-items: center;
+            padding: 40px;
+        }
+
+        .wait-screen.active, .survey-screen.active, .comprehension-screen.active {
+            display: flex;
+        }
+
+        .wait-box, .survey-box, .comprehension-box {
+            background: white;
+            border-radius: 16px;
+            padding: 50px;
+            max-width: 1000px;
+            width: 100%;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-height: 90vh;
+            overflow-y: auto;
+            cursor: default;
+        }
+
+        /* Comprehension Questions Styles */
+        .comprehension-question {
+            margin-bottom: 25px;
+            padding: 15px;
+            background: #f9fafb;
+            border-radius: 8px;
+        }
+
+        .comprehension-question label {
+            font-weight: 500;
+            margin-bottom: 12px;
+            display: block;
+            color: #444;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+
+        .radio-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin-top: 10px;
+        }
+
+        .radio-option {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .radio-option:hover {
+            background: #e5e7eb;
+        }
+
+        .radio-option input[type="radio"] {
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
+        }
+
+        .radio-option label {
+            cursor: pointer;
+            margin: 0 !important;
+            font-weight: normal !important;
+        }
+
+        /* Modal for hints */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+            justify-content: center;
+            align-items: center;
+        }
+
+        .modal.active {
+            display: flex;
+        }
+
+        .modal-content {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            max-width: 600px;
+            width: 90%;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+        }
+
+        .modal-header {
+            font-size: 22px;
+            font-weight: 600;
+            color: #dc2626;
+            margin-bottom: 20px;
+        }
+
+        .modal-body {
+            margin-bottom: 25px;
+            max-height: 400px;
+            overflow-y: auto;
+            cursor: default;
+        }
+
+        .hint-item {
+            background: #fef2f2;
+            border-left: 4px solid #dc2626;
+            padding: 12px;
+            margin-bottom: 12px;
+            border-radius: 4px;
+        }
+
+        .hint-item strong {
+            color: #991b1b;
+        }
+
+        .hint-text {
+            color: #7f1d1d;
+            margin-top: 5px;
+            line-height: 1.5;
+        }
+
+        .modal-footer {
+            text-align: right;
+        }
+
+        .modal-btn {
+            padding: 10px 20px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+
+        .modal-btn:hover {
+            background: #5568d3;
+        }
+
+            display: none;
+            min-height: 100vh;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            justify-content: center;
+            align-items: center;
+            padding: 40px;
+        }
+
+        .wait-screen.active, .survey-screen.active {
+            display: flex;
+        }
+
+        .wait-box, .survey-box {
+            background: white;
+            border-radius: 16px;
+            padding: 50px;
+            max-width: 1000px;
+            width: 100%;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-height: 90vh;
+            overflow-y: auto;
+            cursor: default;
+        }
+
+        .wait-box p {
+            font-size: 20px;
+            font-weight: bold;
+            color: #333;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .survey-box h2 {
+            font-size: 24px;
+            color: #333;
+            margin-bottom: 30px;
+        }
+
+        .survey-columns {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            margin-bottom: 30px;
+        }
+
+        .survey-question {
+            margin-bottom: 20px;
+        }
+
+        .survey-question label {
+            display: block;
+            color: #444;
+            font-size: 14px;
+            margin-bottom: 10px;
+            line-height: 1.5;
+        }
+
+        .survey-question select, .survey-question input, .survey-question textarea {
+            width: 100%;
+            padding: 10px;
+            border: 2px solid #e0e0e0;
+            border-radius: 6px;
+            font-size: 14px;
+            font-family: inherit;
+        }
+
+        .survey-question textarea {
+            min-height: 80px;
+            resize: vertical;
+        }
+
+        .survey-question input:focus, .survey-question select:focus, .survey-question textarea:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .continue-btn {
+            display: block;
+            width: 200px;
+            margin: 30px auto 0;
+            padding: 14px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .continue-btn:hover {
+            background: #5568d3;
+        }
+
+        .survey-single-column {
+            margin-bottom: 30px;
+        }
+    </style>
+</head>
+<body>
+    <div class="login-screen" id="loginScreen">
+        <div class="login-box">
+            <h1>Team Brainstorming Session</h1>
+            
+            <p style="color: #555; margin-bottom: 30px; font-size: 16px; line-height: 1.6;">
+                Please enter the Team and Participant ID that the experimenter provided you.
+            </p>
+
+            <div class="input-group">
+                <label for="teamId">Team ID</label>
+                <input type="text" id="teamId" placeholder="Enter your team ID">
+            </div>
+
+            <div class="input-group">
+                <label for="participantId">Participant ID</label>
+                <input type="text" id="participantId" placeholder="Enter your participant ID">
+            </div>
+
+            <button class="btn" onclick="startStudy()">Start Session</button>
+        </div>
+    </div>
+
+    <!-- Comprehension Questions Screen -->
+    <div class="comprehension-screen" id="comprehensionScreen">
+        <div class="comprehension-box">
+            <h2>Please answer the following questions.</h2>
+            
+            <div class="comprehension-question">
+                <label>1. The ideas you come up with need to exist and you need to describe how the developer would make the app.</label>
+                <div class="radio-group">
+                    <div class="radio-option">
+                        <input type="radio" id="q1_true" name="q1" value="True">
+                        <label for="q1_true">True</label>
+                    </div>
+                    <div class="radio-option">
+                        <input type="radio" id="q1_false" name="q1" value="False">
+                        <label for="q1_false">False</label>
+                    </div>
+                </div>
+            </div>
+
+            <div class="comprehension-question">
+                <label>2. You will be evaluated based on the number of ideas you generate.</label>
+                <div class="radio-group">
+                    <div class="radio-option">
+                        <input type="radio" id="q2_true" name="q2" value="True">
+                        <label for="q2_true">True</label>
+                    </div>
+                    <div class="radio-option">
+                        <input type="radio" id="q2_false" name="q2" value="False">
+                        <label for="q2_false">False</label>
+                    </div>
+                </div>
+            </div>
+
+            <div class="comprehension-question">
+                <label>3. You will be evaluated based on the final idea you submit.</label>
+                <div class="radio-group">
+                    <div class="radio-option">
+                        <input type="radio" id="q3_true" name="q3" value="True">
+                        <label for="q3_true">True</label>
+                    </div>
+                    <div class="radio-option">
+                        <input type="radio" id="q3_false" name="q3" value="False">
+                        <label for="q3_false">False</label>
+                    </div>
+                </div>
+            </div>
+
+            <div class="comprehension-question">
+                <label>4. Both your team member and you must approve the final idea you agree on before submitting it.</label>
+                <div class="radio-group">
+                    <div class="radio-option">
+                        <input type="radio" id="q4_true" name="q4" value="True">
+                        <label for="q4_true">True</label>
+                    </div>
+                    <div class="radio-option">
+                        <input type="radio" id="q4_false" name="q4" value="False">
+                        <label for="q4_false">False</label>
+                    </div>
+                </div>
+            </div>
+
+            <div class="comprehension-question">
+                <label>5. You can edit the final idea after your team member approves it.</label>
+                <div class="radio-group">
+                    <div class="radio-option">
+                        <input type="radio" id="q5_true" name="q5" value="True">
+                        <label for="q5_true">True</label>
+                    </div>
+                    <div class="radio-option">
+                        <input type="radio" id="q5_false" name="q5" value="False">
+                        <label for="q5_false">False</label>
+                    </div>
+                </div>
+            </div>
+
+            <div class="comprehension-question">
+                <label>6. During the brainstorming task, using Generative AI is not allowed.</label>
+                <div class="radio-group">
+                    <div class="radio-option">
+                        <input type="radio" id="q6_true" name="q6" value="True">
+                        <label for="q6_true">True</label>
+                    </div>
+                    <div class="radio-option">
+                        <input type="radio" id="q6_false" name="q6" value="False">
+                        <label for="q6_false">False</label>
+                    </div>
+                </div>
+            </div>
+
+            <div class="comprehension-question">
+                <label>7. If you receive 10 points for Quality, and 6 points for Originality of your idea, your final points will be calculated as:</label>
+                <div class="radio-group">
+                    <div class="radio-option">
+                        <input type="radio" id="q7_a" name="q7" value="a">
+                        <label for="q7_a">a) 60% × 10 + 40% × 6 = 8.4</label>
+                    </div>
+                    <div class="radio-option">
+                        <input type="radio" id="q7_b" name="q7" value="b">
+                        <label for="q7_b">b) 40% × 10 + 60% × 6 = 7.6</label>
+                    </div>
+                    <div class="radio-option">
+                        <input type="radio" id="q7_c" name="q7" value="c">
+                        <label for="q7_c">c) 50% × 10 + 50% × 6 = 8</label>
+                    </div>
+                    <div class="radio-option">
+                        <input type="radio" id="q7_d" name="q7" value="d">
+                        <label for="q7_d">d) 10 + 6 = 16</label>
+                    </div>
+                </div>
+            </div>
+
+            <button class="continue-btn" onclick="checkComprehension()">Continue</button>
+        </div>
+    </div>
+
+    <!-- Modal for hints -->
+    <div class="modal" id="hintModal">
+        <div class="modal-content">
+            <div class="modal-header">Please Review Your Answers</div>
+            <div class="modal-body" id="hintContent"></div>
+            <div class="modal-footer">
+                <button class="modal-btn" onclick="closeHintModal()">Review Answers</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Wait Screen 1 (After Comprehension) -->
+    <div class="wait-screen" id="waitScreen1">
+        <div class="wait-box">
+            <p>Please wait before you continue with the rest of the experiment, the experimenter will give you further instructions.</p>
+            <button class="continue-btn" onclick="goToMainSession()">Continue</button>
+        </div>
+    </div>
+
+    <div class="main-container" id="mainContainer">
+        <div class="left-panel">
+            <div class="top-bar">
+                <div class="left-top-section">
+                    <button class="instructions-button" onclick="showInstructions()">Instructions</button>
+                    <div class="timer-display" id="timerDisplay">30:00</div>
+                    <div class="online-status">
+                        <div class="status-indicator">
+                            <div class="status-dot" id="status1"></div>
+                            <span>P1</span>
+                        </div>
+                        <div class="status-indicator">
+                            <div class="status-dot" id="status2"></div>
+                            <span>P2</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="team-info" id="teamInfo"></div>
+            </div>
+            <div class="ideas-section">
+                <div class="ideas-header">Possible Ideas</div>
+                <div class="ideas-list" id="ideasList"></div>
+                <input type="text" id="ideaInput" class="idea-input"
+                       placeholder="Add a new idea..." onkeypress="if(event.key==='Enter') addIdea()">
+                <button class="add-idea-btn" onclick="addIdea()">+ Add Idea</button>
+            </div>
+        </div>
+
+        <div class="right-panel">
+            <div class="final-section">
+                <div class="ideas-header">Final Idea <span id="modeLabel" style="color: #10b981; font-weight: 600;">(Editing Mode)</span></div>
+
+                <div class="final-input-group">
+                    <label class="final-input-label">
+                        Title
+                        <span class="word-counter" id="titleCounter">0/5 words</span>
+                    </label>
+                    <input type="text" id="finalTitle" class="final-title-input"
+                           placeholder="Enter title (max 5 words)">
+                </div>
+
+                <div class="final-input-group">
+                    <label class="final-input-label">
+                        Description
+                        <span class="word-counter" id="descCounter">0/80 words</span>
+                    </label>
+                    <textarea id="finalDescription" class="final-description-textarea"
+                              placeholder="Enter description (max 80 words)"></textarea>
+                </div>
+
+                <div class="approval-section">
+                    <div class="approval-header">Both participants must approve:</div>
+                    <div class="approval-checkboxes">
+                        <div class="approval-item" id="approval1Container">
+                            <input type="checkbox" id="approval1" onchange="handleApproval(1)">
+                            <label for="approval1">Participant 1 approves</label>
+                        </div>
+                        <div class="approval-item" id="approval2Container">
+                            <input type="checkbox" id="approval2" onchange="handleApproval(2)">
+                            <label for="approval2">Participant 2 approves</label>
+                        </div>
+                    </div>
+                </div>
+
+                <button class="submit-btn" id="submitBtn" onclick="submitFinal()" disabled>Submit Final Idea</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Wait Screen -->
+    <div class="wait-screen" id="waitScreen">
+        <div class="wait-box">
+            <p>Please wait before you continue with the rest of the experiment, the experimenter will give you further instructions.</p>
+            <button class="continue-btn" onclick="goToSurveyPage1()">Continue</button>
+        </div>
+    </div>
+
+    <!-- Survey Page 1 -->
+    <div class="survey-screen" id="surveyPage1">
+        <div class="survey-box">
+            <h2>Please indicate how much you agree or disagree with the following statements.</h2>
+            <div class="survey-columns">
+                <div>
+                    <div class="survey-question">
+                        <label>1. I use Generative AI tools (e.g. ChatGPT) to support my academic work (e.g. assignments, studying, brainstorming, explanations).</label>
+                        <select id="q1">
+                            <option value="">Select an answer</option>
+                            <option value="Strongly Disagree">Strongly Disagree</option>
+                            <option value="Disagree">Disagree</option>
+                            <option value="Neither Disagree nor Agree">Neither Disagree nor Agree</option>
+                            <option value="Agree">Agree</option>
+                            <option value="Strongly Agree">Strongly Agree</option>
+                        </select>
+                    </div>
+                    <div class="survey-question">
+                        <label>2. I use Generative AI tools for personal or non-academic purposes (e.g. creative writing, daily tasks, recommendations, hobbies).</label>
+                        <select id="q2">
+                            <option value="">Select an answer</option>
+                            <option value="Strongly Disagree">Strongly Disagree</option>
+                            <option value="Disagree">Disagree</option>
+                            <option value="Neither Disagree nor Agree">Neither Disagree nor Agree</option>
+                            <option value="Agree">Agree</option>
+                            <option value="Strongly Agree">Strongly Agree</option>
+                        </select>
+                    </div>
+                    <div class="survey-question">
+                        <label>3. I often revise or build on ideas generated by Generative AI tools in my work.</label>
+                        <select id="q3">
+                            <option value="">Select an answer</option>
+                            <option value="Strongly Disagree">Strongly Disagree</option>
+                            <option value="Disagree">Disagree</option>
+                            <option value="Neither Disagree nor Agree">Neither Disagree nor Agree</option>
+                            <option value="Agree">Agree</option>
+                            <option value="Strongly Agree">Strongly Agree</option>
+                        </select>
+                    </div>
+                    <div class="survey-question">
+                        <label>4. Generative AI tools help me save time when completing tasks.</label>
+                        <select id="q4">
+                            <option value="">Select an answer</option>
+                            <option value="Strongly Disagree">Strongly Disagree</option>
+                            <option value="Disagree">Disagree</option>
+                            <option value="Neither Disagree nor Agree">Neither Disagree nor Agree</option>
+                            <option value="Agree">Agree</option>
+                            <option value="Strongly Agree">Strongly Agree</option>
+                        </select>
+                    </div>
+                    <div class="survey-question">
+                        <label>5. Generative AI tools improve the quality of my work (e.g. clarity, structure, completeness).</label>
+                        <select id="q5">
+                            <option value="">Select an answer</option>
+                            <option value="Strongly Disagree">Strongly Disagree</option>
+                            <option value="Disagree">Disagree</option>
+                            <option value="Neither Disagree nor Agree">Neither Disagree nor Agree</option>
+                            <option value="Agree">Agree</option>
+                            <option value="Strongly Agree">Strongly Agree</option>
+                        </select>
+                    </div>
+                </div>
+                <div>
+                    <div class="survey-question">
+                        <label>6. I believe learning to use Generative AI responsibly is an important skill for my future career.</label>
+                        <select id="q6">
+                            <option value="">Select an answer</option>
+                            <option value="Strongly Disagree">Strongly Disagree</option>
+                            <option value="Disagree">Disagree</option>
+                            <option value="Neither Disagree nor Agree">Neither Disagree nor Agree</option>
+                            <option value="Agree">Agree</option>
+                            <option value="Strongly Agree">Strongly Agree</option>
+                        </select>
+                    </div>
+                    <div class="survey-question">
+                        <label>7. I am concerned that Generative AI tools can sometimes produce output that is factually inaccurate.</label>
+                        <select id="q7">
+                            <option value="">Select an answer</option>
+                            <option value="Strongly Disagree">Strongly Disagree</option>
+                            <option value="Disagree">Disagree</option>
+                            <option value="Neither Disagree nor Agree">Neither Disagree nor Agree</option>
+                            <option value="Agree">Agree</option>
+                            <option value="Strongly Agree">Strongly Agree</option>
+                        </select>
+                    </div>
+                    <div class="survey-question">
+                        <label>8. I am worried that Generative AI tools can sometimes produce output that may be biased or unfair.</label>
+                        <select id="q8">
+                            <option value="">Select an answer</option>
+                            <option value="Strongly Disagree">Strongly Disagree</option>
+                            <option value="Disagree">Disagree</option>
+                            <option value="Neither Disagree nor Agree">Neither Disagree nor Agree</option>
+                            <option value="Agree">Agree</option>
+                            <option value="Strongly Agree">Strongly Agree</option>
+                        </select>
+                    </div>
+                    <div class="survey-question">
+                        <label>9. I am concerned that relying too much on Generative AI tools may reduce my own learning or skill development.</label>
+                        <select id="q9">
+                            <option value="">Select an answer</option>
+                            <option value="Strongly Disagree">Strongly Disagree</option>
+                            <option value="Disagree">Disagree</option>
+                            <option value="Neither Disagree nor Agree">Neither Disagree nor Agree</option>
+                            <option value="Agree">Agree</option>
+                            <option value="Strongly Agree">Strongly Agree</option>
+                        </select>
+                    </div>
+                    <div class="survey-question">
+                        <label>10. Overall, I find Generative AI tools to be valuable in my work and daily tasks.</label>
+                        <select id="q10">
+                            <option value="">Select an answer</option>
+                            <option value="Strongly Disagree">Strongly Disagree</option>
+                            <option value="Disagree">Disagree</option>
+                            <option value="Neither Disagree nor Agree">Neither Disagree nor Agree</option>
+                            <option value="Agree">Agree</option>
+                            <option value="Strongly Agree">Strongly Agree</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+            <button class="continue-btn" onclick="submitSurveyPage1()">Continue</button>
+        </div>
+    </div>
+
+    <!-- Survey Page 2 -->
+    <div class="survey-screen" id="surveyPage2">
+        <div class="survey-box">
+            <h2>Please answer the following questions.</h2>
+            <div class="survey-single-column">
+                <div class="survey-question">
+                    <label>What is your academic standing?</label>
+                    <select id="employmentStatus">
+                        <option value="">Select an answer</option>
+                        <option value="Undergraduate student">Undergraduate student</option>
+                        <option value="Graduate student">Graduate student</option>
+                    </select>
+                </div>
+                <div class="survey-question">
+                    <label>What is your major field?</label>
+                    <select id="majorField" onchange="toggleMajorOther()">
+                        <option value="">Select an answer</option>
+                        <option value="STEM">STEM (Science, Technology, Engineering and Mathematics)</option>
+                        <option value="Business and Economics">Business and Economics</option>
+                        <option value="Social Sciences">Social Sciences</option>
+                        <option value="Arts and Humanities">Arts and Humanities</option>
+                        <option value="Health and Medical Sciences">Health and Medical Sciences</option>
+                        <option value="Education">Education</option>
+                        <option value="Law">Law</option>
+                        <option value="Other">Other</option>
+                    </select>
+                </div>
+                <div class="survey-question" id="majorOtherDiv" style="display: none;">
+                    <label>If you chose "Other", please specify your major.</label>
+                    <input type="text" id="majorOther" />
+                </div>
+                <div class="survey-question">
+                    <label>What is your age (in years)?</label>
+                    <input type="number" id="age" min="18" max="100" />
+                </div>
+                <div class="survey-question">
+                    <label>To which gender do you most identify?</label>
+                    <select id="gender">
+                        <option value="">Select an answer</option>
+                        <option value="Female">Female</option>
+                        <option value="Male">Male</option>
+                        <option value="Transgender Female">Transgender Female</option>
+                        <option value="Transgender Male">Transgender Male</option>
+                        <option value="Gender Variant / Non-Conforming">Gender Variant / Non-Conforming</option>
+                        <option value="Other">Other</option>
+                        <option value="Prefer not to answer">Prefer not to answer</option>
+                    </select>
+                </div>
+            </div>
+            <button class="continue-btn" onclick="submitSurveyPage2()">Continue</button>
+        </div>
+    </div>
+
+    <!-- Survey Page 3 -->
+    <div class="survey-screen" id="surveyPage3">
+        <div class="survey-box">
+            <h2>Please answer the following questions to receive your check. You should enter the address where you would want your check to be mailed.</h2>
+            <div class="survey-single-column">
+                <div class="survey-question">
+                    <label>First and Last Name:</label>
+                    <input type="text" id="firstLastName" />
+                </div>
+                <div class="survey-question">
+                    <label>Address (line 1 – street and number):</label>
+                    <input type="text" id="addressLine1" />
+                </div>
+                <div class="survey-question">
+                    <label>Address (optional line 2 – apartment # or additional information):</label>
+                    <input type="text" id="addressLine2" />
+                </div>
+                <div class="survey-question">
+                    <label>City:</label>
+                    <input type="text" id="city" />
+                </div>
+                <div class="survey-question">
+                    <label>State (2 letter abbreviation):</label>
+                    <input type="text" id="state" maxlength="2" style="text-transform: uppercase;" />
+                </div>
+                <div class="survey-question">
+                    <label>Postal Code:</label>
+                    <input type="text" id="postalCode" maxlength="5" pattern="[0-9]{5}" />
+                </div>
+            </div>
+            <button class="continue-btn" onclick="submitSurveyPage3()">Continue</button>
+        </div>
+    </div>
+
+    <!-- Strategy Description Page -->
+    <div class="survey-screen" id="strategyPage">
+        <div class="survey-box">
+            <h2>Please describe your approach to completing the brainstorming task.</h2>
+            <div class="survey-single-column">
+                <div class="survey-question">
+                    <textarea id="strategyDescription" rows="10" placeholder="Describe your strategies here..."></textarea>
+                </div>
+            </div>
+            <button class="continue-btn" onclick="submitStrategyDescription()">Continue</button>
+        </div>
+    </div>
+
+    <div class="thank-you-screen" id="thankYouScreen">
+        <div class="thank-you-box">
+            <h1>🎉 Thank You!</h1>
+            <p>Your team's submission has been recorded.<br>
+            Thank you for participating in this study!</p>
+        </div>
+    </div>
+
+    <div class="instructions-screen" id="instructionsScreen">
+        <div class="instructions-box">
+            <h1>Task Instructions</h1>
+            <p>
+                You have 30 minutes to complete the following task: You have been hired by a mobile applications developer to come up with new app ideas for the college student market. The developer is interested in any mobile app idea that could be especially appealing or useful to college students in the United States. These apps might address unmet needs faced by students or provide better solutions to existing challenges. The ideas are conceptual only—they do not need to exist yet and you do not need to describe how the developer would make the app.
+            </p>
+            <p>
+                Your final idea submission should include a descriptive title (no more than 5 words), followed by a brief explanation of the idea in no more than 80 words.
+            </p>
+            <button class="go-back-btn" onclick="goBackFromInstructions()">Go Back</button>
+        </div>
+    </div>
+
+    <script>
+        let teamId = '';
+        let participantId = '';
+        let lastIdeaId = 0;
+        let pollInterval;
+        let timerInterval;
+        let timeRemaining = 30 * 60; // 30 minutes in seconds
+        let onlineParticipants = {};
+        const API_BASE = window.location.origin;
+
+        // Comprehension questions correct answers
+        const correctAnswers = {
+            q1: 'False',
+            q2: 'False',
+            q3: 'True',
+            q4: 'True',
+            q5: 'False',
+            q6: 'True',
+            q7: 'a'
+        };
+
+        const hints = {
+            q1: 'The ideas are conceptual only—they do not need to exist yet.',
+            q2: 'Generating several ideas might be helpful for brainstorming, but you will be evaluated based on the final idea you submit.',
+            q3: 'Evaluations will be made based on the final idea you submit to the system.',
+            q4: 'The interface will not let you submit your idea before both team members approve it.',
+            q5: 'None of the team members can edit the final idea after any one of the team members give approval. In order to be able to edit the final idea, both team members must have their approval buttons unchecked.',
+            q6: 'You are not allowed to use Generative AI for this brainstorming task.',
+            q7: 'The final score is calculated as 40% × Originality Score + 60% × Quality Score.'
+        };
+
+        // Track attempts per question
+        let comprehensionAttempts = {
+            q1: 0,
+            q2: 0,
+            q3: 0,
+            q4: 0,
+            q5: 0,
+            q6: 0,
+            q7: 0
+        };
+
+        // Track which questions have been answered correctly
+        let questionsCorrect = {
+            q1: false,
+            q2: false,
+            q3: false,
+            q4: false,
+            q5: false,
+            q6: false,
+            q7: false
+        };
+
+        function checkComprehension() {
+            const answers = {
+                q1: document.querySelector('input[name="q1"]:checked')?.value,
+                q2: document.querySelector('input[name="q2"]:checked')?.value,
+                q3: document.querySelector('input[name="q3"]:checked')?.value,
+                q4: document.querySelector('input[name="q4"]:checked')?.value,
+                q5: document.querySelector('input[name="q5"]:checked')?.value,
+                q6: document.querySelector('input[name="q6"]:checked')?.value,
+                q7: document.querySelector('input[name="q7"]:checked')?.value
+            };
+
+            // Check if all questions are answered
+            const unanswered = Object.keys(answers).filter(q => !answers[q]);
+            if (unanswered.length > 0) {
+                alert('Please answer all questions before continuing.');
+                return;
+            }
+
+            // Check for incorrect answers and increment attempts
+            const incorrectQuestions = [];
+            Object.keys(correctAnswers).forEach(q => {
+                // Only increment attempt count if this question hasn't been answered correctly yet
+                if (!questionsCorrect[q]) {
+                    comprehensionAttempts[q]++;
+                }
+
+                if (answers[q] !== correctAnswers[q]) {
+                    incorrectQuestions.push(q);
+                } else {
+                    // Mark this question as correctly answered
+                    questionsCorrect[q] = true;
+                }
+            });
+
+            if (incorrectQuestions.length > 0) {
+                // Show hints modal
+                showHints(incorrectQuestions);
+            } else {
+                // All correct! Save attempts to database
+                saveComprehensionAttempts();
+
+                // Proceed to wait screen
+                document.getElementById('comprehensionScreen').classList.remove('active');
+                document.getElementById('waitScreen1').classList.add('active');
+                updateStage('wait_screen');
+            }
+        }
+
+        function showHints(incorrectQuestions) {
+            const hintContent = document.getElementById('hintContent');
+            hintContent.innerHTML = '';
+
+            incorrectQuestions.forEach((q, index) => {
+                const questionNum = q.replace('q', '');
+                const hintDiv = document.createElement('div');
+                hintDiv.className = 'hint-item';
+                hintDiv.innerHTML = `
+                    <strong>Question ${questionNum}:</strong>
+                    <div class="hint-text">${hints[q]}</div>
+                `;
+                hintContent.appendChild(hintDiv);
+            });
+
+            document.getElementById('hintModal').classList.add('active');
+        }
+
+        function closeHintModal() {
+            document.getElementById('hintModal').classList.remove('active');
+        }
+
+        function saveComprehensionAttempts() {
+            // Save comprehension attempts to database
+            fetch(API_BASE + '/api/save_comprehension_attempts', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    team_id: teamId,
+                    participant_id: participantId,
+                    q1_attempts: comprehensionAttempts.q1,
+                    q2_attempts: comprehensionAttempts.q2,
+                    q3_attempts: comprehensionAttempts.q3,
+                    q4_attempts: comprehensionAttempts.q4,
+                    q5_attempts: comprehensionAttempts.q5,
+                    q6_attempts: comprehensionAttempts.q6,
+                    q7_attempts: comprehensionAttempts.q7
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                console.log('[Comprehension] Attempts saved:', data);
+            })
+            .catch(err => {
+                console.error('[Comprehension] Error saving attempts:', err);
+            });
+        }
+
+        function loadTypingMetrics() {
+            // Load existing typing metrics from database to support resuming after refresh
+            fetch(API_BASE + `/api/typing_metrics/${teamId}/${participantId}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        // Initialize all title metrics from database
+                        typingMetrics.title.keystrokeCount = data.title_keystroke_count || 0;
+                        typingMetrics.title.activeTypingSeconds = data.title_active_typing_seconds || 0;
+                        typingMetrics.title.firstEditTime = data.title_first_edit_time || null;
+                        typingMetrics.title.lastEditTime = data.title_last_edit_time || null;
+
+                        // Initialize all description metrics from database
+                        typingMetrics.description.keystrokeCount = data.description_keystroke_count || 0;
+                        typingMetrics.description.activeTypingSeconds = data.description_active_typing_seconds || 0;
+                        typingMetrics.description.firstEditTime = data.description_first_edit_time || null;
+                        typingMetrics.description.lastEditTime = data.description_last_edit_time || null;
+
+                        console.log('[Typing Metrics Loaded] P' + participantId,
+                                    'Title - keystrokes:', typingMetrics.title.keystrokeCount,
+                                    'seconds:', typingMetrics.title.activeTypingSeconds,
+                                    'first edit:', typingMetrics.title.firstEditTime,
+                                    'Description - keystrokes:', typingMetrics.description.keystrokeCount,
+                                    'seconds:', typingMetrics.description.activeTypingSeconds,
+                                    'first edit:', typingMetrics.description.firstEditTime);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error loading typing metrics:', error);
+                });
+        }
+
+        function goToMainSession() {
+            // Start the session and timer NOW
+            fetch(API_BASE + '/api/start_session', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({team_id: teamId, participant_id: participantId})
+            })
+            .then(response => response.json())
+            .then(data => {
+                // Disable the other participant's checkbox
+                const otherParticipant = participantId === '1' ? '2' : '1';
+                const otherCheckbox = document.getElementById(`approval${otherParticipant}`);
+                const otherContainer = document.getElementById(`approval${otherParticipant}Container`);
+
+                otherCheckbox.disabled = true;
+                otherContainer.classList.add('disabled');
+
+                loadIdeas();
+                loadFinalIdea();
+                loadApprovals();
+                loadTypingMetrics();  // Load existing typing metrics to preserve keystroke counts
+
+                // Start timer and online status updates
+                startTimer();
+                updateOnlineStatus();
+                sendHeartbeat();
+
+                pollInterval = setInterval(() => {
+                    loadIdeas();
+                    loadFinalIdea();
+                    loadApprovals();
+                    updateOnlineStatus();
+                    sendHeartbeat();
+                }, 2000);
+            });
+
+            document.getElementById('waitScreen1').classList.remove('active');
+            document.getElementById('mainContainer').classList.add('active');
+            document.getElementById('teamInfo').textContent = `Team: ${teamId} | You: ${participantId}`;
+            updateStage('main_session');
+        }
+
+
+
+        function loadTimer() {
+            fetch(API_BASE + `/api/get_timer/${teamId}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.time_remaining !== undefined) {
+                        timeRemaining = data.time_remaining;
+                        updateTimerDisplay();
+                    }
+                })
+                .catch(err => {
+                    console.error('Error loading timer:', err);
+                });
+        }
+
+        function startTimer() {
+            // Load initial time from server FIRST, then start the countdown
+            fetch(API_BASE + `/api/get_timer/${teamId}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.time_remaining !== undefined) {
+                        timeRemaining = data.time_remaining;
+                        updateTimerDisplay();
+
+                        // NOW start the countdown interval with synchronized time
+                        timerInterval = setInterval(() => {
+                            timeRemaining--;
+                            updateTimerDisplay();
+
+                            if (timeRemaining <= 0) {
+                                clearInterval(timerInterval);
+                                alert('Time is up! Please submit your final idea.');
+                            }
+                        }, 1000);
+
+                        // Sync with server every 10 seconds to prevent drift
+                        setInterval(() => {
+                            loadTimer();
+                        }, 10000);
+                    }
+                })
+                .catch(err => {
+                    console.error('Error starting timer:', err);
+                });
+        }
+
+        function updateTimerDisplay() {
+            const minutes = Math.floor(timeRemaining / 60);
+            const seconds = timeRemaining % 60;
+            const display = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+            const timerElement = document.getElementById('timerDisplay');
+            timerElement.textContent = display;
+            
+            // Add warning color if less than 5 minutes
+            if (timeRemaining <= 5 * 60) {
+                timerElement.classList.add('warning');
+            }
+        }
+
+        function updateOnlineStatus() {
+            fetch(API_BASE + `/api/online_status/${teamId}`)
+                .then(response => response.json())
+                .then(data => {
+                    onlineParticipants = data.online || {};
+                    
+                    // Update status dots
+                    const status1 = document.getElementById('status1');
+                    const status2 = document.getElementById('status2');
+                    
+                    if (onlineParticipants['1']) {
+                        status1.classList.add('online');
+                    } else {
+                        status1.classList.remove('online');
+                    }
+                    
+                    if (onlineParticipants['2']) {
+                        status2.classList.add('online');
+                    } else {
+                        status2.classList.remove('online');
+                    }
+                });
+        }
+
+        function sendHeartbeat() {
+            fetch(API_BASE + '/api/heartbeat', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({team_id: teamId, participant_id: participantId})
+            });
+        }
+
+        function updateStage(stage) {
+            // Update participant's current stage for experimenter tracking
+            if (!teamId || !participantId) return;
+
+            fetch(API_BASE + '/api/update_stage', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    team_id: teamId,
+                    participant_id: participantId,
+                    stage: stage
+                })
+            }).catch(error => {
+                console.error('Error updating stage:', error);
+            });
+        }
+
+        function showInstructions() {
+            document.getElementById('mainContainer').classList.remove('active');
+            document.getElementById('instructionsScreen').classList.add('active');
+        }
+
+        function goBackFromInstructions() {
+            document.getElementById('instructionsScreen').classList.remove('active');
+            document.getElementById('mainContainer').classList.add('active');
+        }
+
+        function startStudy() {
+            const teamInput = document.getElementById('teamId').value.trim();
+            const participantInput = document.getElementById('participantId').value.trim();
+
+            if (!teamInput || !participantInput) {
+                alert('Please enter both Team ID and Participant ID');
+                return;
+            }
+
+            // Validate Team ID is an integer
+            if (!Number.isInteger(Number(teamInput)) || Number(teamInput) <= 0) {
+                alert('Team ID must be a positive integer');
+                return;
+            }
+
+            // Validate Participant ID is either 1 or 2
+            if (participantInput !== '1' && participantInput !== '2') {
+                alert('Participant ID must be either 1 or 2');
+                return;
+            }
+
+            teamId = teamInput;
+            participantId = participantInput;
+
+            // Check progress and auto-resume if participant has previous progress
+            fetch(API_BASE + `/api/check_progress/${teamId}/${participantId}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        const stage = data.stage;
+
+                        // Hide login screen
+                        document.getElementById('loginScreen').style.display = 'none';
+
+                        // Redirect to appropriate stage
+                        if (stage === 'completed') {
+                            // Already completed, show thank you screen
+                            document.getElementById('thankYouScreen').classList.add('active');
+                            updateStage('completed');
+                        } else if (stage === 'survey_page3') {
+                            // Resume at survey page 3
+                            document.getElementById('surveyPage3').classList.add('active');
+                            updateStage('survey_page3');
+                        } else if (stage === 'survey_page2') {
+                            // Resume at survey page 2
+                            document.getElementById('surveyPage2').classList.add('active');
+                            updateStage('survey_page2');
+                        } else if (stage === 'strategy_page') {
+                            // Resume at strategy description page
+                            document.getElementById('strategyPage').classList.add('active');
+                            updateStage('strategy_page');
+                        } else if (stage === 'survey_page1') {
+                            // Resume at survey page 1
+                            document.getElementById('surveyPage1').classList.add('active');
+                            updateStage('survey_page1');
+                        } else if (stage === 'wait_for_survey') {
+                            // Resume at waiting screen after main session
+                            document.getElementById('waitScreen').classList.add('active');
+                            updateStage('wait_for_survey');
+                        } else if (stage === 'main_session') {
+                            // Resume main session - load data and start
+                            goToMainSession();
+                            // updateStage called inside goToMainSession
+                        } else if (stage === 'wait_screen') {
+                            // Completed comprehension, waiting to start main session
+                            document.getElementById('waitScreen1').classList.add('active');
+                            updateStage('wait_screen');
+                        } else {
+                            // Start from comprehension (default for new participants)
+                            document.getElementById('comprehensionScreen').classList.add('active');
+                            updateStage('comprehension');
+                        }
+                    } else {
+                        // Error checking progress, start from beginning
+                        console.error('Error checking progress:', data.error);
+                        document.getElementById('loginScreen').style.display = 'none';
+                        document.getElementById('comprehensionScreen').classList.add('active');
+                    }
+                })
+                .catch(error => {
+                    // Network error or other issue, start from beginning
+                    console.error('Error checking progress:', error);
+                    document.getElementById('loginScreen').style.display = 'none';
+                    document.getElementById('comprehensionScreen').classList.add('active');
+                });
+        }
+
+        function loadIdeas() {
+            fetch(API_BASE + `/api/ideas/${teamId}?since=${lastIdeaId}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.ideas && data.ideas.length > 0) {
+                        data.ideas.forEach(idea => {
+                            addIdeaToUI(idea.id, idea.participant_id, idea.idea_text, idea.timestamp);
+                            lastIdeaId = Math.max(lastIdeaId, idea.id);
+                        });
+                    }
+                });
+        }
+
+        function addIdea() {
+            const input = document.getElementById('ideaInput');
+            const idea = input.value.trim();
+            if (!idea) return;
+
+            input.value = '';
+            fetch(API_BASE + '/api/add_idea', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({team_id: teamId, participant_id: participantId, idea_text: idea})
+            });
+        }
+
+        function addIdeaToUI(id, participant, text, timestamp) {
+            if (document.getElementById(`idea-${id}`)) return;
+            
+            const ideasList = document.getElementById('ideasList');
+            const ideaDiv = document.createElement('div');
+            ideaDiv.id = `idea-${id}`;
+            ideaDiv.className = 'idea-item';
+            
+            // SQLite CURRENT_TIMESTAMP returns UTC time
+            // Parse as UTC and convert to local time
+            // Format: "YYYY-MM-DD HH:MM:SS"
+            const date = new Date(timestamp + ' UTC');
+            const timeStr = date.toLocaleTimeString('en-US', { 
+                hour: 'numeric', 
+                minute: '2-digit',
+                hour12: true 
+            });
+            
+            ideaDiv.innerHTML = `
+                <div class="idea-meta">Participant ${participant} - ${timeStr}</div>
+                <div>${escapeHtml(text)}</div>
+            `;
+            ideasList.appendChild(ideaDiv);
+        }
+
+        let lastSavedTitle = '';
+        let lastSavedDescription = '';
+        let isUserEditingTitle = false;
+        let isUserEditingDesc = false;
+        let isProgrammaticTitleUpdate = false;
+        let isProgrammaticDescUpdate = false;
+
+        // Typing metrics tracking
+        let typingMetrics = {
+            title: {
+                keystrokeCount: 0,
+                activeTypingSeconds: 0,
+                firstEditTime: null,
+                lastEditTime: null,
+                lastKeystrokeTime: null,
+                sessionStartTime: null
+            },
+            description: {
+                keystrokeCount: 0,
+                activeTypingSeconds: 0,
+                firstEditTime: null,
+                lastEditTime: null,
+                lastKeystrokeTime: null,
+                sessionStartTime: null
+            }
+        };
+
+        const TYPING_SESSION_TIMEOUT = 5000; // 5 seconds
+
+        function trackKeystroke(field) {
+            const metric = typingMetrics[field];
+            const now = new Date().toISOString();
+            const nowTime = Date.now();
+            
+            // Increment keystroke count
+            metric.keystrokeCount++;
+            
+            // Set first edit time if not set
+            if (!metric.firstEditTime) {
+                metric.firstEditTime = now;
+            }
+            
+            // Always update last edit time
+            metric.lastEditTime = now;
+            
+            // Handle typing session
+            if (metric.lastKeystrokeTime && (nowTime - metric.lastKeystrokeTime) < TYPING_SESSION_TIMEOUT) {
+                // Continue current session
+                if (metric.sessionStartTime) {
+                    // Session is active
+                }
+            } else {
+                // Start new session
+                if (metric.sessionStartTime) {
+                    // End previous session and add its duration
+                    const sessionDuration = (metric.lastKeystrokeTime - metric.sessionStartTime) / 1000;
+                    metric.activeTypingSeconds += sessionDuration;
+                }
+                metric.sessionStartTime = nowTime;
+            }
+            
+            metric.lastKeystrokeTime = nowTime;
+            
+            // Send metrics to server
+            sendTypingMetrics(field);
+        }
+
+        function endTypingSession(field) {
+            const metric = typingMetrics[field];
+            if (metric.sessionStartTime && metric.lastKeystrokeTime) {
+                const sessionDuration = (metric.lastKeystrokeTime - metric.sessionStartTime) / 1000;
+                metric.activeTypingSeconds += sessionDuration;
+                metric.sessionStartTime = null;
+                sendTypingMetrics(field);
+            }
+        }
+
+        function sendTypingMetrics(field) {
+            const metric = typingMetrics[field];
+            
+            fetch(API_BASE + '/api/typing_metrics', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    team_id: teamId,
+                    participant_id: participantId,
+                    field: field,
+                    keystroke_count: metric.keystrokeCount,
+                    active_typing_seconds: metric.activeTypingSeconds,
+                    first_edit_time: metric.firstEditTime,
+                    last_edit_time: metric.lastEditTime
+                })
+            });
+        }
+
+        // Check for ended sessions periodically
+        setInterval(() => {
+            ['title', 'description'].forEach(field => {
+                const metric = typingMetrics[field];
+                if (metric.sessionStartTime && metric.lastKeystrokeTime) {
+                    const timeSinceLastKeystroke = Date.now() - metric.lastKeystrokeTime;
+                    if (timeSinceLastKeystroke >= TYPING_SESSION_TIMEOUT) {
+                        endTypingSession(field);
+                    }
+                }
+            });
+        }, 1000);
+
+        // Save typing metrics before page closes/refreshes
+        window.addEventListener('beforeunload', function() {
+            endTypingSession('title');
+            endTypingSession('description');
+        });
+
+        document.getElementById('finalTitle').addEventListener('keydown', function(e) {
+            // Track all keystrokes including backspace, delete, etc.
+            if (e.key.length === 1 || e.key === 'Backspace' || e.key === 'Delete') {
+                trackKeystroke('title');
+            }
+        });
+
+        document.getElementById('finalTitle').addEventListener('blur', function() {
+            endTypingSession('title');
+        });
+
+        let approvals = {1: false, 2: false};
+
+        function countWords(text) {
+            return text.trim().split(/\s+/).filter(word => word.length > 0).length;
+        }
+
+        function loadFinalIdea() {
+            fetch(API_BASE + `/api/final_idea/${teamId}`)
+                .then(response => response.json())
+                .then(data => {
+                    const serverTitle = data.title || '';
+                    const serverDesc = data.description || '';
+                    const titleInput = document.getElementById('finalTitle');
+                    const descTextarea = document.getElementById('finalDescription');
+                    
+                    if (!isUserEditingTitle && serverTitle !== titleInput.value) {
+                        isProgrammaticTitleUpdate = true;
+                        titleInput.value = serverTitle;
+                        updateWordCount('title');
+                        isProgrammaticTitleUpdate = false;
+                    }
+
+                    if (!isUserEditingDesc && serverDesc !== descTextarea.value) {
+                        isProgrammaticDescUpdate = true;
+                        descTextarea.value = serverDesc;
+                        updateWordCount('description');
+                        isProgrammaticDescUpdate = false;
+                    }
+                });
+        }
+
+        function updateWordCount(type) {
+            if (type === 'title') {
+                const titleInput = document.getElementById('finalTitle');
+                const words = countWords(titleInput.value);
+                const counter = document.getElementById('titleCounter');
+                counter.textContent = `${words}/5 words`;
+                counter.classList.toggle('warning', words > 5);
+            } else {
+                const descTextarea = document.getElementById('finalDescription');
+                const words = countWords(descTextarea.value);
+                const counter = document.getElementById('descCounter');
+                counter.textContent = `${words}/80 words`;
+                counter.classList.toggle('warning', words > 80);
+            }
+        }
+
+        document.getElementById('finalTitle').addEventListener('focus', function() {
+            isUserEditingTitle = true;
+        });
+
+        document.getElementById('finalTitle').addEventListener('blur', function() {
+            // Timeout must be longer than the 1000ms save delay to prevent race condition
+            // where loadFinalIdea() overwrites unsaved user input
+            setTimeout(() => { isUserEditingTitle = false; }, 1500);
+        });
+
+        document.getElementById('finalTitle').addEventListener('input', function() {
+            // Skip if this is a programmatic update from server
+            if (isProgrammaticTitleUpdate) {
+                return;
+            }
+
+            // Enforce 5 word limit
+            const words = countWords(this.value);
+            if (words > 5) {
+                // Truncate to 5 words
+                const wordArray = this.value.trim().split(/\s+/);
+                this.value = wordArray.slice(0, 5).join(' ');
+            }
+
+            updateWordCount('title');
+
+            // Save after 1 second of inactivity
+            clearTimeout(this.saveTimer);
+            this.saveTimer = setTimeout(() => {
+                saveFinalIdea();
+            }, 1000);
+        });
+
+        document.getElementById('finalDescription').addEventListener('keydown', function(e) {
+            // Track all keystrokes including backspace, delete, etc.
+            if (e.key.length === 1 || e.key === 'Backspace' || e.key === 'Delete') {
+                trackKeystroke('description');
+            }
+        });
+
+        document.getElementById('finalDescription').addEventListener('blur', function() {
+            endTypingSession('description');
+        });
+
+        document.getElementById('finalDescription').addEventListener('focus', function() {
+            isUserEditingDesc = true;
+        });
+
+        document.getElementById('finalDescription').addEventListener('blur', function() {
+            // Timeout must be longer than the 1000ms save delay to prevent race condition
+            // where loadFinalIdea() overwrites unsaved user input
+            setTimeout(() => { isUserEditingDesc = false; }, 1500);
+        });
+
+        document.getElementById('finalDescription').addEventListener('input', function() {
+            // Skip if this is a programmatic update from server
+            if (isProgrammaticDescUpdate) {
+                return;
+            }
+
+            // Enforce 80 word limit
+            const words = countWords(this.value);
+            if (words > 80) {
+                // Truncate to 80 words
+                const wordArray = this.value.trim().split(/\s+/);
+                this.value = wordArray.slice(0, 80).join(' ');
+            }
+
+            updateWordCount('description');
+
+            // Save after 1 second of inactivity
+            clearTimeout(this.saveTimer);
+            this.saveTimer = setTimeout(() => {
+                saveFinalIdea();
+            }, 1000);
+        });
+
+        function saveFinalIdea() {
+            const title = document.getElementById('finalTitle').value;
+            const description = document.getElementById('finalDescription').value;
+            
+            fetch(API_BASE + '/api/update_final', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    team_id: teamId, 
+                    title: title,
+                    description: description
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                console.log('[Final Idea Save] Saved:', data);
+            });
+        }
+
+        function handleApproval(participantNum) {
+            const checkbox = document.getElementById(`approval${participantNum}`);
+            
+            console.log('[Approval] Participant', participantId, 'trying to check box', participantNum);
+            
+            // Only allow own checkbox
+            if (participantNum.toString() !== participantId) {
+                checkbox.checked = approvals[participantNum];
+                alert('You can only approve with your own checkbox!');
+                return;
+            }
+            
+            const isChecked = checkbox.checked;
+            
+            // Save to backend
+            fetch(API_BASE + '/api/set_approval', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    team_id: teamId, 
+                    participant_id: participantNum,
+                    approved: isChecked
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                console.log('[Approval] Saved to server:', data);
+                if (data.approvals) {
+                    approvals = {
+                        1: data.approvals['1'] || false,
+                        2: data.approvals['2'] || false
+                    };
+                    updateApprovalUI();
+                    checkApprovals();
+                }
+            });
+        }
+
+        function updateApprovalUI() {
+            document.getElementById('approval1').checked = approvals[1];
+            document.getElementById('approval2').checked = approvals[2];
+        }
+
+        function loadApprovals() {
+            fetch(API_BASE + `/api/get_approvals/${teamId}`)
+                .then(response => response.json())
+                .then(data => {
+                    // Check if someone submitted
+                    if (data.submitted) {
+                        console.log('[Approval] Session submitted, redirecting to wait screen');
+                        clearInterval(pollInterval);
+                        clearInterval(timerInterval);
+                        document.getElementById('mainContainer').style.display = 'none';
+                        document.getElementById('waitScreen').classList.add('active');
+                        updateStage('wait_for_survey');
+                        return;
+                    }
+                    
+                    if (data.approvals) {
+                        approvals = {
+                            1: data.approvals['1'] || false,
+                            2: data.approvals['2'] || false
+                        };
+                        updateApprovalUI();
+                        checkApprovals();
+                    }
+                });
+        }
+
+        function updateTextAreaLock() {
+            const titleInput = document.getElementById('finalTitle');
+            const descTextarea = document.getElementById('finalDescription');
+            const modeLabel = document.getElementById('modeLabel');
+            const anyApproved = approvals[1] || approvals[2];
+
+            // Lock text areas if ANY approval is checked
+            // Unlock ONLY if BOTH approvals are unchecked
+            if (anyApproved) {
+                titleInput.disabled = true;
+                descTextarea.disabled = true;
+                titleInput.style.backgroundColor = '#f5f5f5';
+                descTextarea.style.backgroundColor = '#f5f5f5';
+                titleInput.style.cursor = 'not-allowed';
+                descTextarea.style.cursor = 'not-allowed';
+                modeLabel.textContent = '(Submission Mode)';
+                modeLabel.style.color = '#dc2626';
+            } else {
+                titleInput.disabled = false;
+                descTextarea.disabled = false;
+                titleInput.style.backgroundColor = '#fff';
+                descTextarea.style.backgroundColor = '#fff';
+                titleInput.style.cursor = 'text';
+                descTextarea.style.cursor = 'text';
+                modeLabel.textContent = '(Editing Mode)';
+                modeLabel.style.color = '#10b981';
+            }
+        }
+
+        function checkApprovals() {
+            const submitBtn = document.getElementById('submitBtn');
+            const bothApproved = approvals[1] && approvals[2];
+
+            console.log('[Approval] Checking approvals - P1:', approvals[1], 'P2:', approvals[2], 'Both:', bothApproved);
+
+            submitBtn.disabled = !bothApproved;
+
+            // Update text area lock based on approval state
+            updateTextAreaLock();
+
+            if (bothApproved) {
+                console.log('[Approval] Both approved! Submit button enabled');
+            }
+        }
+
+        function submitFinal() {
+            console.log('[Submit] Submit button clicked');
+
+            // End any active typing sessions to capture final metrics
+            endTypingSession('title');
+            endTypingSession('description');
+
+            const title = document.getElementById('finalTitle').value.trim();
+            const description = document.getElementById('finalDescription').value.trim();
+            
+            if (!title || !description) {
+                alert('Please enter both title and description before submitting');
+                return;
+            }
+
+            const titleWords = countWords(title);
+            const descWords = countWords(description);
+            
+            if (titleWords > 5) {
+                alert('Title must be 5 words or less (currently ' + titleWords + ' words)');
+                return;
+            }
+            
+            if (descWords > 80) {
+                alert('Description must be 80 words or less (currently ' + descWords + ' words)');
+                return;
+            }
+
+            console.log('[Submit] Checking approvals:', approvals);
+            
+            if (!approvals[1] || !approvals[2]) {
+                alert('Both participants must approve before submitting');
+                return;
+            }
+
+            if (confirm('Are you sure you want to submit? This will end the session for both participants.')) {
+                const finalIdea = `Title: ${title}\n\nDescription: ${description}`;
+                
+                fetch(API_BASE + '/api/submit', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        team_id: teamId, 
+                        final_idea: finalIdea,
+                        title: title,
+                        description: description
+                    })
+                })
+                .then(() => {
+                    // Stop timer and polling
+                    clearInterval(pollInterval);
+                    clearInterval(timerInterval);
+
+                    // Go to wait screen
+                    document.getElementById('mainContainer').style.display = 'none';
+                    document.getElementById('waitScreen').classList.add('active');
+                    updateStage('wait_for_survey');
+                });
+            }
+        }
+
+        // Survey navigation functions
+        function goToSurveyPage1() {
+            document.getElementById('waitScreen').classList.remove('active');
+            document.getElementById('surveyPage1').classList.add('active');
+            updateStage('survey_page1');
+        }
+
+        function toggleMajorOther() {
+            const majorField = document.getElementById('majorField').value;
+            const majorOtherDiv = document.getElementById('majorOtherDiv');
+            if (majorField === 'Other') {
+                majorOtherDiv.style.display = 'block';
+            } else {
+                majorOtherDiv.style.display = 'none';
+            }
+        }
+
+        function submitSurveyPage1() {
+            // Validate all questions are answered
+            const questions = ['q1', 'q2', 'q3', 'q4', 'q5', 'q6', 'q7', 'q8', 'q9', 'q10'];
+            for (let q of questions) {
+                if (!document.getElementById(q).value) {
+                    alert('Please answer all questions before continuing');
+                    return;
+                }
+            }
+
+            // Collect responses
+            const responses = {};
+            questions.forEach(q => {
+                responses[q] = document.getElementById(q).value;
+            });
+
+            // Send to server
+            fetch(API_BASE + '/api/survey_page1', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    team_id: teamId,
+                    participant_id: participantId,
+                    ...responses
+                })
+            })
+            .then(() => {
+                document.getElementById('surveyPage1').classList.remove('active');
+                document.getElementById('strategyPage').classList.add('active');
+                updateStage('strategy_page');
+            });
+        }
+
+        function submitSurveyPage2() {
+            // Validate required fields
+            const employmentStatus = document.getElementById('employmentStatus').value;
+            const majorField = document.getElementById('majorField').value;
+            const age = document.getElementById('age').value;
+            const gender = document.getElementById('gender').value;
+
+            if (!employmentStatus || !majorField || !age || !gender) {
+                alert('Please answer all required questions before continuing');
+                return;
+            }
+
+            // Validate age is integer
+            const ageInt = parseInt(age);
+            if (isNaN(ageInt) || ageInt < 18 || ageInt > 100) {
+                alert('Please enter a valid age between 18 and 100');
+                return;
+            }
+
+            // If "Other" major selected, require specification
+            const majorOther = document.getElementById('majorOther').value.trim();
+            if (majorField === 'Other' && !majorOther) {
+                alert('Please specify your major field');
+                return;
+            }
+
+            // Send to server
+            fetch(API_BASE + '/api/survey_page2', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    team_id: teamId,
+                    participant_id: participantId,
+                    employment_status: employmentStatus,
+                    major_field: majorField,
+                    major_other: majorOther,
+                    age: ageInt,
+                    gender: gender
+                })
+            })
+            .then(() => {
+                document.getElementById('surveyPage2').classList.remove('active');
+                document.getElementById('surveyPage3').classList.add('active');
+                updateStage('survey_page3');
+            });
+        }
+
+        function submitSurveyPage3() {
+            // Validate required fields
+            const firstLastName = document.getElementById('firstLastName').value.trim();
+            const addressLine1 = document.getElementById('addressLine1').value.trim();
+            const addressLine2 = document.getElementById('addressLine2').value.trim();
+            const city = document.getElementById('city').value.trim();
+            const state = document.getElementById('state').value.trim().toUpperCase();
+            const postalCode = document.getElementById('postalCode').value.trim();
+
+            if (!firstLastName || !addressLine1 || !city || !state || !postalCode) {
+                alert('Please fill in all required fields');
+                return;
+            }
+
+            // Validate state is 2 letters
+            if (state.length !== 2 || !/^[A-Z]{2}$/.test(state)) {
+                alert('State must be a 2-letter abbreviation (e.g., MI, CA, NY)');
+                return;
+            }
+
+            // Validate postal code is exactly 5 digits
+            if (!/^\d{5}$/.test(postalCode)) {
+                alert('Postal Code must be exactly 5 digits');
+                return;
+            }
+
+            // Send to server
+            fetch(API_BASE + '/api/survey_page3', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    team_id: teamId,
+                    participant_id: participantId,
+                    first_last_name: firstLastName,
+                    address_line1: addressLine1,
+                    address_line2: addressLine2,
+                    city: city,
+                    state: state,
+                    postal_code: postalCode
+                })
+            })
+            .then(() => {
+                document.getElementById('surveyPage3').classList.remove('active');
+                document.getElementById('thankYouScreen').classList.add('active');
+                updateStage('completed');
+            });
+        }
+
+        function submitStrategyDescription() {
+            const strategyDescription = document.getElementById('strategyDescription').value.trim();
+
+            if (!strategyDescription) {
+                alert('Please provide a description of your strategies before continuing.');
+                return;
+            }
+
+            // Send to server
+            fetch(API_BASE + '/api/strategy_description', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    team_id: teamId,
+                    participant_id: participantId,
+                    strategy_description: strategyDescription
+                })
+            })
+            .then(() => {
+                document.getElementById('strategyPage').classList.remove('active');
+                document.getElementById('surveyPage2').classList.add('active');
+                updateStage('survey_page2');
+            });
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+    </script>
+</body>
+</html>
+'''
+
+@app.route('/')
+def index():
+    return render_template_string(HTML_TEMPLATE)
+
+@app.route('/experimenter')
+def experimenter_dashboard():
+    """Experimenter dashboard to track participant progress"""
+    EXPERIMENTER_TEMPLATE = r'''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Experimenter Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .dashboard-container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .dashboard-header {
+            background: white;
+            padding: 30px;
+            border-radius: 15px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            margin-bottom: 20px;
+        }
+
+        .dashboard-header h1 {
+            color: #667eea;
+            margin-bottom: 10px;
+        }
+
+        .last-refresh {
+            color: #666;
+            font-size: 14px;
+        }
+
+        .teams-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+            gap: 20px;
+        }
+
+        .team-card {
+            background: white;
+            border-radius: 15px;
+            padding: 20px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+
+        .team-header {
+            font-size: 20px;
+            font-weight: 600;
+            color: #667eea;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #e5e7eb;
+        }
+
+        .participant {
+            background: #f9fafb;
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 10px;
+        }
+
+        .participant:last-child {
+            margin-bottom: 0;
+        }
+
+        .participant-id {
+            font-weight: 600;
+            color: #374151;
+            margin-bottom: 8px;
+        }
+
+        .stage-badge {
+            display: inline-block;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: 500;
+            margin-bottom: 5px;
+        }
+
+        .stage-login { background: #dbeafe; color: #1e40af; }
+        .stage-comprehension { background: #fef3c7; color: #92400e; }
+        .stage-wait_screen { background: #fce7f3; color: #9f1239; }
+        .stage-main_session { background: #d1fae5; color: #065f46; }
+        .stage-wait_for_survey { background: #fbcfe8; color: #831843; }
+        .stage-survey_page1 { background: #e0e7ff; color: #3730a3; }
+        .stage-strategy_page { background: #ddd6fe; color: #5b21b6; }
+        .stage-survey_page2 { background: #fed7aa; color: #9a3412; }
+        .stage-survey_page3 { background: #fecaca; color: #991b1b; }
+        .stage-completed { background: #10b981; color: white; }
+
+        .last-update {
+            font-size: 12px;
+            color: #6b7280;
+        }
+
+        .refresh-btn {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 500;
+            transition: background 0.3s;
+            margin-top: 10px;
+        }
+
+        .refresh-btn:hover {
+            background: #5568d3;
+        }
+
+        .auto-refresh {
+            margin-top: 10px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .auto-refresh input {
+            width: 20px;
+            height: 20px;
+        }
+
+        .auto-refresh label {
+            color: #374151;
+            font-size: 14px;
+        }
+
+        .empty-state {
+            background: white;
+            border-radius: 15px;
+            padding: 60px 20px;
+            text-align: center;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+
+        .empty-state p {
+            color: #6b7280;
+            font-size: 18px;
+        }
+    </style>
+</head>
+<body>
+    <div class="dashboard-container">
+        <div class="dashboard-header">
+            <h1>Experimenter Dashboard</h1>
+            <div class="last-refresh">Last updated: <span id="lastRefresh">--</span></div>
+            <button class="refresh-btn" onclick="loadParticipants()">Refresh Now</button>
+            <div class="auto-refresh">
+                <input type="checkbox" id="autoRefresh" onchange="toggleAutoRefresh()" checked>
+                <label for="autoRefresh">Auto-refresh every 5 seconds</label>
+            </div>
+        </div>
+
+        <div id="teamsContainer"></div>
+    </div>
+
+    <script>
+        let autoRefreshInterval = null;
+
+        function formatStage(stage) {
+            const stageNames = {
+                'login': 'Login',
+                'comprehension': 'Comprehension Questions',
+                'wait_screen': 'Waiting to Start',
+                'main_session': 'Main Session',
+                'wait_for_survey': 'Waiting for Survey',
+                'survey_page1': 'Survey Page 1',
+                'strategy_page': 'Strategy Description',
+                'survey_page2': 'Survey Page 2',
+                'survey_page3': 'Survey Page 3',
+                'completed': 'Completed ✓'
+            };
+            return stageNames[stage] || stage;
+        }
+
+        function formatTime(timestamp) {
+            if (!timestamp) return 'Never';
+            const date = new Date(timestamp);
+            return date.toLocaleTimeString();
+        }
+
+        function loadParticipants() {
+            fetch('/api/experimenter/participants')
+                .then(response => response.json())
+                .then(data => {
+                    const container = document.getElementById('teamsContainer');
+                    const lastRefresh = document.getElementById('lastRefresh');
+
+                    lastRefresh.textContent = new Date().toLocaleTimeString();
+
+                    if (data.teams.length === 0) {
+                        container.innerHTML = `
+                            <div class="empty-state">
+                                <p>No participants yet. Participants will appear here once they log in.</p>
+                            </div>
+                        `;
+                        return;
+                    }
+
+                    container.innerHTML = '';
+                    container.className = 'teams-grid';
+
+                    data.teams.forEach(team => {
+                        const teamCard = document.createElement('div');
+                        teamCard.className = 'team-card';
+
+                        let participantsHTML = '';
+                        [team.p1, team.p2].forEach((p, index) => {
+                            if (p) {
+                                const participantNum = index + 1;
+                                participantsHTML += `
+                                    <div class="participant">
+                                        <div class="participant-id">Participant ${participantNum}</div>
+                                        <div class="stage-badge stage-${p.stage}">${formatStage(p.stage)}</div>
+                                        <div class="last-update">Last update: ${formatTime(p.last_update)}</div>
+                                    </div>
+                                `;
+                            }
+                        });
+
+                        teamCard.innerHTML = `
+                            <div class="team-header">Team ${team.team_id}</div>
+                            ${participantsHTML}
+                        `;
+
+                        container.appendChild(teamCard);
+                    });
+                })
+                .catch(error => {
+                    console.error('Error loading participants:', error);
+                });
+        }
+
+        function toggleAutoRefresh() {
+            const enabled = document.getElementById('autoRefresh').checked;
+
+            if (enabled) {
+                loadParticipants(); // Load immediately
+                autoRefreshInterval = setInterval(loadParticipants, 5000);
+            } else {
+                if (autoRefreshInterval) {
+                    clearInterval(autoRefreshInterval);
+                    autoRefreshInterval = null;
+                }
+            }
+        }
+
+        // Load on page load
+        loadParticipants();
+        toggleAutoRefresh(); // Start auto-refresh
+    </script>
+</body>
+</html>
+    '''
+    return render_template_string(EXPERIMENTER_TEMPLATE)
+
+@app.route('/api/experimenter/participants', methods=['GET'])
+def get_all_participants():
+    """Get all participants and their current stages for experimenter dashboard"""
+    conn = sqlite3.connect('study_data.db')
+    c = conn.cursor()
+
+    # Get all unique team_ids from all tables (teams, comprehension, surveys)
+    c.execute('''
+        SELECT DISTINCT team_id FROM (
+            SELECT team_id FROM teams
+            UNION
+            SELECT team_id FROM comprehension_attempts
+            UNION
+            SELECT team_id FROM survey_page1
+            UNION
+            SELECT team_id FROM survey_page2
+            UNION
+            SELECT team_id FROM survey_page3
+            UNION
+            SELECT team_id FROM strategy_descriptions
+        ) ORDER BY team_id
+    ''')
+    all_team_ids = [row[0] for row in c.fetchall()]
+
+    teams = []
+    for team_id in all_team_ids:
+        # Get team data if it exists
+        c.execute('SELECT start_time, submitted, p1_last_heartbeat, p2_last_heartbeat, p1_current_stage, p1_last_update, p2_current_stage, p2_last_update FROM teams WHERE team_id = ?', (team_id,))
+        team_row = c.fetchone()
+
+        if team_row:
+            main_session_started = team_row[0] is not None
+            submitted = team_row[1] == 1
+            p1_heartbeat = team_row[2]
+            p2_heartbeat = team_row[3]
+            p1_tracked_stage = team_row[4]
+            p1_tracked_update = team_row[5]
+            p2_tracked_stage = team_row[6]
+            p2_tracked_update = team_row[7]
+        else:
+            # Team doesn't exist in teams table yet (only in comprehension/survey tables)
+            main_session_started = False
+            submitted = False
+            p1_heartbeat = None
+            p2_heartbeat = None
+            p1_tracked_stage = None
+            p1_tracked_update = None
+            p2_tracked_stage = None
+            p2_tracked_update = None
+
+        team_data = {
+            'team_id': team_id,
+            'p1': None,
+            'p2': None
+        }
+
+        # Check each participant
+        for participant_id in ['1', '2']:
+            # Get heartbeat and tracked stage for this participant
+            participant_heartbeat = p1_heartbeat if participant_id == '1' else p2_heartbeat
+            tracked_stage = p1_tracked_stage if participant_id == '1' else p2_tracked_stage
+            tracked_update = p1_tracked_update if participant_id == '1' else p2_tracked_update
+            # Check comprehension
+            c.execute('SELECT timestamp FROM comprehension_attempts WHERE team_id = ? AND participant_id = ? ORDER BY timestamp DESC LIMIT 1',
+                     (team_id, participant_id))
+            comp_row = c.fetchone()
+            comprehension_done = comp_row is not None
+
+            # Check surveys
+            c.execute('SELECT timestamp FROM survey_page1 WHERE team_id = ? AND participant_id = ? ORDER BY timestamp DESC LIMIT 1',
+                     (team_id, participant_id))
+            survey1_row = c.fetchone()
+            survey_page1_done = survey1_row is not None
+
+            c.execute('SELECT timestamp FROM strategy_descriptions WHERE team_id = ? AND participant_id = ? ORDER BY timestamp DESC LIMIT 1',
+                     (team_id, participant_id))
+            strategy_row = c.fetchone()
+            strategy_description_done = strategy_row is not None
+
+            c.execute('SELECT timestamp FROM survey_page2 WHERE team_id = ? AND participant_id = ? ORDER BY timestamp DESC LIMIT 1',
+                     (team_id, participant_id))
+            survey2_row = c.fetchone()
+            survey_page2_done = survey2_row is not None
+
+            c.execute('SELECT timestamp FROM survey_page3 WHERE team_id = ? AND participant_id = ? ORDER BY timestamp DESC LIMIT 1',
+                     (team_id, participant_id))
+            survey3_row = c.fetchone()
+            survey_page3_done = survey3_row is not None
+
+            # Determine current stage - prefer tracked stage from frontend updates, fall back to dynamic detection
+            stage = None
+            last_update = None
+
+            if tracked_stage:
+                # Use the stage tracked by frontend updateStage() calls
+                stage = tracked_stage
+                last_update = tracked_update
+            else:
+                # Fall back to dynamic detection based on database records
+                if survey_page3_done:
+                    stage = 'completed'
+                    last_update = survey3_row[0]
+                elif survey_page2_done:
+                    stage = 'survey_page3'
+                    last_update = survey2_row[0]
+                elif strategy_description_done:
+                    stage = 'survey_page2'
+                    last_update = strategy_row[0]
+                elif survey_page1_done:
+                    stage = 'strategy_page'
+                    last_update = survey1_row[0]
+                elif submitted:
+                    stage = 'survey_page1'
+                    last_update = None
+                elif comprehension_done and main_session_started:
+                    stage = 'main_session'
+                    last_update = comp_row[0]
+                elif comprehension_done:
+                    stage = 'wait_screen'
+                    last_update = comp_row[0]
+                elif participant_heartbeat:
+                    # Participant has logged in (has heartbeat) but hasn't completed comprehension
+                    stage = 'comprehension'
+                    last_update = participant_heartbeat
+
+            # Only include participant if they have some activity (stage is set or heartbeat exists)
+            if stage:
+                team_data[f'p{participant_id}'] = {
+                    'stage': stage,
+                    'last_update': last_update
+                }
+
+        # Only include team if at least one participant has activity
+        if team_data['p1'] or team_data['p2']:
+            teams.append(team_data)
+
+    conn.close()
+    return jsonify({'teams': teams})
+
+@app.route('/api/start_session', methods=['POST'])
+def start_session():
+    data = request.json
+    team_id = data.get('team_id')
+    participant_id = data.get('participant_id')
+    
+    if not team_id or not participant_id:
+        return jsonify({'error': 'Team ID and Participant ID required'}), 400
+    
+    conn = sqlite3.connect('study_data.db')
+    c = conn.cursor()
+
+    # Ensure team exists
+    try:
+        c.execute('INSERT INTO teams (team_id, start_time) VALUES (?, NULL)', (team_id,))
+    except sqlite3.IntegrityError:
+        pass  # Team already exists
+
+    # Set start_time to now (when the main session actually begins)
+    c.execute('UPDATE teams SET start_time = CURRENT_TIMESTAMP WHERE team_id = ? AND start_time IS NULL', (team_id,))
+    conn.commit()
+    conn.close()
+
+    if team_id not in active_teams:
+        active_teams[team_id] = {}
+
+    return jsonify({'success': True, 'team_id': team_id, 'participant_id': participant_id})
+
+@app.route('/api/save_comprehension_attempts', methods=['POST'])
+def save_comprehension_attempts():
+    data = request.json
+    team_id = data.get('team_id')
+    participant_id = data.get('participant_id')
+    q1_attempts = data.get('q1_attempts', 0)
+    q2_attempts = data.get('q2_attempts', 0)
+    q3_attempts = data.get('q3_attempts', 0)
+    q4_attempts = data.get('q4_attempts', 0)
+    q5_attempts = data.get('q5_attempts', 0)
+    q6_attempts = data.get('q6_attempts', 0)
+    q7_attempts = data.get('q7_attempts', 0)
+
+    if not team_id or not participant_id:
+        return jsonify({'error': 'Team ID and Participant ID required'}), 400
+
+    conn = sqlite3.connect('study_data.db')
+    c = conn.cursor()
+    c.execute('''
+        INSERT INTO comprehension_attempts
+        (team_id, participant_id, q1_attempts, q2_attempts, q3_attempts, q4_attempts, q5_attempts, q6_attempts, q7_attempts)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (team_id, participant_id, q1_attempts, q2_attempts, q3_attempts, q4_attempts, q5_attempts, q6_attempts, q7_attempts))
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        'success': True,
+        'team_id': team_id,
+        'participant_id': participant_id,
+        'attempts': {
+            'q1': q1_attempts,
+            'q2': q2_attempts,
+            'q3': q3_attempts,
+            'q4': q4_attempts
+        }
+    })
+
+@app.route('/api/messages/<team_id>', methods=['GET'])
+def get_messages(team_id):
+    since_id = request.args.get('since', 0, type=int)
+    conn = sqlite3.connect('study_data.db')
+    c = conn.cursor()
+    c.execute('''
+        SELECT id, role, content, participant_id, timestamp
+        FROM messages WHERE team_id = ? AND id > ? ORDER BY id ASC
+    ''', (team_id, since_id))
+    rows = c.fetchall()
+    conn.close()
+    
+    messages = [{'id': r[0], 'role': r[1], 'content': r[2], 'participant_id': r[3], 'timestamp': r[4]} for r in rows]
+    return jsonify({'messages': messages})
+
+@app.route('/api/ideas/<team_id>', methods=['GET'])
+def get_ideas(team_id):
+    since_id = request.args.get('since', 0, type=int)
+    conn = sqlite3.connect('study_data.db')
+    c = conn.cursor()
+    c.execute('''
+        SELECT id, participant_id, idea_text, timestamp
+        FROM ideas WHERE team_id = ? AND id > ? ORDER BY id ASC
+    ''', (team_id, since_id))
+    rows = c.fetchall()
+    conn.close()
+    
+    ideas = [{'id': r[0], 'participant_id': r[1], 'idea_text': r[2], 'timestamp': r[3]} for r in rows]
+    return jsonify({'ideas': ideas})
+
+@app.route('/api/add_idea', methods=['POST'])
+def add_idea():
+    data = request.json
+    team_id = data.get('team_id')
+    participant_id = data.get('participant_id')
+    idea_text = data.get('idea_text')
+    
+    if not all([team_id, participant_id, idea_text]):
+        return jsonify({'error': 'Missing required fields'}), 400
+    
+    conn = sqlite3.connect('study_data.db')
+    c = conn.cursor()
+    c.execute('INSERT INTO ideas (team_id, participant_id, idea_text) VALUES (?, ?, ?)',
+              (team_id, participant_id, idea_text))
+    conn.commit()
+    conn.close()
+    
+    return jsonify({'success': True})
+
+@app.route('/api/final_idea/<team_id>', methods=['GET'])
+def get_final_idea(team_id):
+    # Always read from database to support multiple worker processes
+    # This also enables real-time collaboration between team members
+    conn = sqlite3.connect('study_data.db')
+    c = conn.cursor()
+    c.execute('SELECT final_idea FROM teams WHERE team_id = ?', (team_id,))
+    row = c.fetchone()
+    conn.close()
+
+    # Parse the final_idea field from database
+    title = ''
+    description = ''
+    if row and row[0]:
+        final_idea_text = row[0]
+        # Parse format: "Title: {title}\n\nDescription: {description}"
+        if 'Title:' in final_idea_text and 'Description:' in final_idea_text:
+            parts = final_idea_text.split('\n\n')
+            if len(parts) >= 2:
+                title = parts[0].replace('Title:', '').strip()
+                description = parts[1].replace('Description:', '').strip()
+
+    return jsonify({
+        'title': title,
+        'description': description,
+        'final_idea': row[0] if row and row[0] else ''
+    })
+
+@app.route('/api/update_final', methods=['POST'])
+def update_final():
+    data = request.json
+    team_id = data.get('team_id')
+    title = data.get('title', '')
+    description = data.get('description', '')
+    
+    if not team_id:
+        return jsonify({'error': 'Team ID required'}), 400
+
+    # Update database (single source of truth for multiple workers)
+    # This ensures real-time collaboration between team members across all workers
+    final_idea_combined = f"Title: {title}\n\nDescription: {description}"
+    conn = sqlite3.connect('study_data.db')
+    c = conn.cursor()
+    c.execute('UPDATE teams SET final_idea = ? WHERE team_id = ?', (final_idea_combined, team_id))
+    conn.commit()
+    conn.close()
+
+    return jsonify({'success': True})
+
+@app.route('/api/submit', methods=['POST'])
+def submit():
+    data = request.json
+    team_id = data.get('team_id')
+    final_idea = data.get('final_idea')
+    
+    if not team_id or not final_idea:
+        return jsonify({'error': 'Team ID and final idea required'}), 400
+    
+    conn = sqlite3.connect('study_data.db')
+    c = conn.cursor()
+    c.execute('''
+        UPDATE teams 
+        SET final_idea = ?, submitted = 1, submit_time = CURRENT_TIMESTAMP 
+        WHERE team_id = ?
+    ''', (final_idea, team_id))
+    conn.commit()
+    conn.close()
+
+    return jsonify({'success': True})
+
+@app.route('/api/set_approval', methods=['POST'])
+def set_approval():
+    data = request.json
+    team_id = data.get('team_id')
+    participant_id = str(data.get('participant_id'))
+    approved = data.get('approved', False)
+
+    if not team_id or not participant_id:
+        return jsonify({'error': 'Team ID and Participant ID required'}), 400
+
+    # Update database (single source of truth for multiple workers)
+    conn = sqlite3.connect('study_data.db')
+    c = conn.cursor()
+
+    # Determine which column to update based on participant_id
+    column = f'p{participant_id}_approved'
+    c.execute(f'UPDATE teams SET {column} = ? WHERE team_id = ?', (1 if approved else 0, team_id))
+    conn.commit()
+
+    # Read back both approval states
+    c.execute('SELECT p1_approved, p2_approved FROM teams WHERE team_id = ?', (team_id,))
+    row = c.fetchone()
+    conn.close()
+
+    approvals = {'1': False, '2': False}
+    if row:
+        approvals = {'1': bool(row[0]), '2': bool(row[1])}
+
+    return jsonify({'success': True, 'approvals': approvals})
+
+@app.route('/api/get_approvals/<team_id>', methods=['GET'])
+def get_approvals(team_id):
+    # Always read from database to support multiple worker processes
+    conn = sqlite3.connect('study_data.db')
+    c = conn.cursor()
+    c.execute('SELECT p1_approved, p2_approved, submitted FROM teams WHERE team_id = ?', (team_id,))
+    row = c.fetchone()
+    conn.close()
+
+    approvals = {'1': False, '2': False}
+    submitted = False
+
+    if row:
+        approvals = {'1': bool(row[0]), '2': bool(row[1])}
+        submitted = bool(row[2])
+
+    return jsonify({
+        'approvals': approvals,
+        'submitted': submitted
+    })
+
+@app.route('/api/heartbeat', methods=['POST'])
+def heartbeat():
+    data = request.json
+    team_id = data.get('team_id')
+    participant_id = data.get('participant_id')
+
+    if not team_id or not participant_id:
+        return jsonify({'error': 'Team ID and Participant ID required'}), 400
+
+    # Update database (single source of truth for multiple workers)
+    conn = sqlite3.connect('study_data.db')
+    c = conn.cursor()
+
+    # Determine which column to update based on participant_id
+    column = f'p{participant_id}_last_heartbeat'
+    c.execute(f'UPDATE teams SET {column} = CURRENT_TIMESTAMP WHERE team_id = ?', (team_id,))
+    conn.commit()
+    conn.close()
+
+    return jsonify({'success': True})
+
+@app.route('/api/update_stage', methods=['POST'])
+def update_stage():
+    """Update participant's current stage for experimenter tracking"""
+    data = request.json
+    team_id = data.get('team_id')
+    participant_id = data.get('participant_id')
+    stage = data.get('stage')
+
+    if not all([team_id, participant_id, stage]):
+        return jsonify({'error': 'Team ID, Participant ID, and stage required'}), 400
+
+    # Validate participant_id
+    if participant_id not in ['1', '2']:
+        return jsonify({'error': 'Invalid participant_id'}), 400
+
+    # Update database (single source of truth for multiple workers)
+    conn = sqlite3.connect('study_data.db')
+    c = conn.cursor()
+
+    # Ensure team exists - create if it doesn't (with start_time = NULL so session hasn't started yet)
+    try:
+        c.execute('INSERT INTO teams (team_id, start_time) VALUES (?, NULL)', (team_id,))
+    except sqlite3.IntegrityError:
+        pass  # Team already exists
+
+    # Determine which columns to update based on participant_id
+    stage_column = f'p{participant_id}_current_stage'
+    update_column = f'p{participant_id}_last_update'
+    c.execute(f'UPDATE teams SET {stage_column} = ?, {update_column} = CURRENT_TIMESTAMP WHERE team_id = ?', (stage, team_id))
+    conn.commit()
+    conn.close()
+
+    return jsonify({'success': True})
+
+@app.route('/api/typing_metrics', methods=['POST'])
+def update_typing_metrics():
+    data = request.json
+    team_id = data.get('team_id')
+    participant_id = data.get('participant_id')
+    field = data.get('field')  # 'title' or 'description'
+    keystroke_count = data.get('keystroke_count', 0)
+    active_typing_seconds = data.get('active_typing_seconds', 0)
+    first_edit_time = data.get('first_edit_time')
+    last_edit_time = data.get('last_edit_time')
+    
+    if not all([team_id, participant_id, field]):
+        return jsonify({'error': 'Missing required fields'}), 400
+    
+    # Validate field parameter to prevent SQL injection
+    if field not in ['title', 'description']:
+        return jsonify({'error': 'Invalid field parameter'}), 400
+    
+    # Validate participant_id to prevent SQL injection
+    if participant_id not in ['1', '2']:
+        return jsonify({'error': 'Invalid participant_id'}), 400
+    
+    # Safe: Use explicit mapping to avoid string interpolation in SQL
+    # Mapping for participant-specific columns
+    participant_field_columns = {
+        ('1', 'title'): {
+            'keystroke': 'p1_title_keystroke_count',
+            'typing_seconds': 'p1_title_active_typing_seconds',
+            'first_edit': 'p1_title_first_edit_time',
+            'last_edit': 'p1_title_last_edit_time'
+        },
+        ('1', 'description'): {
+            'keystroke': 'p1_description_keystroke_count',
+            'typing_seconds': 'p1_description_active_typing_seconds',
+            'first_edit': 'p1_description_first_edit_time',
+            'last_edit': 'p1_description_last_edit_time'
+        },
+        ('2', 'title'): {
+            'keystroke': 'p2_title_keystroke_count',
+            'typing_seconds': 'p2_title_active_typing_seconds',
+            'first_edit': 'p2_title_first_edit_time',
+            'last_edit': 'p2_title_last_edit_time'
+        },
+        ('2', 'description'): {
+            'keystroke': 'p2_description_keystroke_count',
+            'typing_seconds': 'p2_description_active_typing_seconds',
+            'first_edit': 'p2_description_first_edit_time',
+            'last_edit': 'p2_description_last_edit_time'
+        }
+    }
+    
+    # Mapping for aggregate columns
+    aggregate_field_columns = {
+        'title': {
+            'total_keystroke': 'total_title_keystroke_count',
+            'total_typing_seconds': 'total_title_active_typing_seconds',
+            'first_edit': 'title_first_edit_time',
+            'last_edit': 'title_last_edit_time',
+            'p1_keystroke': 'p1_title_keystroke_count',
+            'p2_keystroke': 'p2_title_keystroke_count',
+            'p1_typing_seconds': 'p1_title_active_typing_seconds',
+            'p2_typing_seconds': 'p2_title_active_typing_seconds',
+            'p1_first_edit': 'p1_title_first_edit_time',
+            'p2_first_edit': 'p2_title_first_edit_time',
+            'p1_last_edit': 'p1_title_last_edit_time',
+            'p2_last_edit': 'p2_title_last_edit_time'
+        },
+        'description': {
+            'total_keystroke': 'total_description_keystroke_count',
+            'total_typing_seconds': 'total_description_active_typing_seconds',
+            'first_edit': 'description_first_edit_time',
+            'last_edit': 'description_last_edit_time',
+            'p1_keystroke': 'p1_description_keystroke_count',
+            'p2_keystroke': 'p2_description_keystroke_count',
+            'p1_typing_seconds': 'p1_description_active_typing_seconds',
+            'p2_typing_seconds': 'p2_description_active_typing_seconds',
+            'p1_first_edit': 'p1_description_first_edit_time',
+            'p2_first_edit': 'p2_description_first_edit_time',
+            'p1_last_edit': 'p1_description_last_edit_time',
+            'p2_last_edit': 'p2_description_last_edit_time'
+        }
+    }
+    
+    p_cols = participant_field_columns[(participant_id, field)]
+    agg_cols = aggregate_field_columns[field]
+    
+    conn = sqlite3.connect('study_data.db')
+    c = conn.cursor()
+    
+    # Update participant-specific metrics with hardcoded column names (safe from SQL injection)
+    c.execute(f'''
+        UPDATE teams 
+        SET {p_cols['keystroke']} = ?,
+            {p_cols['typing_seconds']} = ?,
+            {p_cols['first_edit']} = ?,
+            {p_cols['last_edit']} = ?
+        WHERE team_id = ?
+    ''', (keystroke_count, active_typing_seconds, first_edit_time, last_edit_time, team_id))
+    
+    # Get both participants' data to calculate aggregates with hardcoded column names
+    c.execute(f'''
+        SELECT {agg_cols['p1_keystroke']}, {agg_cols['p2_keystroke']},
+               {agg_cols['p1_typing_seconds']}, {agg_cols['p2_typing_seconds']},
+               {agg_cols['p1_first_edit']}, {agg_cols['p2_first_edit']},
+               {agg_cols['p1_last_edit']}, {agg_cols['p2_last_edit']}
+        FROM teams WHERE team_id = ?
+    ''', (team_id,))
+    row = c.fetchone()
+    
+    if row:
+        p1_keystrokes, p2_keystrokes, p1_typing, p2_typing, p1_first, p2_first, p1_last, p2_last = row
+        
+        # Calculate aggregates
+        total_keystrokes = (p1_keystrokes or 0) + (p2_keystrokes or 0)
+        total_typing = (p1_typing or 0) + (p2_typing or 0)
+        
+        # Find earliest first edit time
+        first_times = [t for t in [p1_first, p2_first] if t]
+        aggregate_first = min(first_times) if first_times else None
+        
+        # Find latest last edit time
+        last_times = [t for t in [p1_last, p2_last] if t]
+        aggregate_last = max(last_times) if last_times else None
+        
+        # Update aggregate metrics with hardcoded column names (safe from SQL injection)
+        c.execute(f'''
+            UPDATE teams 
+            SET {agg_cols['total_keystroke']} = ?,
+                {agg_cols['total_typing_seconds']} = ?,
+                {agg_cols['first_edit']} = ?,
+                {agg_cols['last_edit']} = ?
+            WHERE team_id = ?
+        ''', (total_keystrokes, total_typing, aggregate_first, aggregate_last, team_id))
+    
+    conn.commit()
+    conn.close()
+    
+    return jsonify({'success': True})
+
+@app.route('/api/typing_metrics/<team_id>/<participant_id>', methods=['GET'])
+def get_typing_metrics(team_id, participant_id):
+    """
+    Retrieve current typing metrics for a participant to support resuming after refresh
+    """
+    if not team_id or not participant_id:
+        return jsonify({'error': 'Team ID and Participant ID required'}), 400
+
+    # Validate participant_id
+    if participant_id not in ['1', '2']:
+        return jsonify({'error': 'Invalid participant_id'}), 400
+
+    conn = sqlite3.connect('study_data.db')
+    c = conn.cursor()
+
+    # Get participant-specific metrics
+    if participant_id == '1':
+        c.execute('''
+            SELECT p1_title_keystroke_count, p1_title_active_typing_seconds, p1_title_first_edit_time, p1_title_last_edit_time,
+                   p1_description_keystroke_count, p1_description_active_typing_seconds, p1_description_first_edit_time, p1_description_last_edit_time
+            FROM teams WHERE team_id = ?
+        ''', (team_id,))
+    else:  # participant_id == '2'
+        c.execute('''
+            SELECT p2_title_keystroke_count, p2_title_active_typing_seconds, p2_title_first_edit_time, p2_title_last_edit_time,
+                   p2_description_keystroke_count, p2_description_active_typing_seconds, p2_description_first_edit_time, p2_description_last_edit_time
+            FROM teams WHERE team_id = ?
+        ''', (team_id,))
+
+    row = c.fetchone()
+    conn.close()
+
+    if row:
+        return jsonify({
+            'success': True,
+            'title_keystroke_count': row[0] or 0,
+            'title_active_typing_seconds': row[1] or 0,
+            'title_first_edit_time': row[2],
+            'title_last_edit_time': row[3],
+            'description_keystroke_count': row[4] or 0,
+            'description_active_typing_seconds': row[5] or 0,
+            'description_first_edit_time': row[6],
+            'description_last_edit_time': row[7]
+        })
+    else:
+        # Team doesn't exist yet, return zeros/nulls
+        return jsonify({
+            'success': True,
+            'title_keystroke_count': 0,
+            'title_active_typing_seconds': 0,
+            'title_first_edit_time': None,
+            'title_last_edit_time': None,
+            'description_keystroke_count': 0,
+            'description_active_typing_seconds': 0,
+            'description_first_edit_time': None,
+            'description_last_edit_time': None
+        })
+
+@app.route('/api/check_progress/<team_id>/<participant_id>', methods=['GET'])
+def check_progress(team_id, participant_id):
+    """
+    Check participant progress and return current stage for auto-resume functionality.
+    Stages: login, comprehension, wait_screen, main_session, wait_for_survey, survey_page1, strategy_page, survey_page2, survey_page3, completed
+    """
+    if not team_id or not participant_id:
+        return jsonify({'error': 'Team ID and Participant ID required'}), 400
+
+    # Validate participant_id
+    if participant_id not in ['1', '2']:
+        return jsonify({'error': 'Invalid participant_id'}), 400
+
+    conn = sqlite3.connect('study_data.db')
+    c = conn.cursor()
+
+    # First, check if there's a tracked stage for this participant (from updateStage() calls)
+    stage_column = f'p{participant_id}_current_stage'
+    c.execute(f'SELECT start_time, submitted, {stage_column} FROM teams WHERE team_id = ?', (team_id,))
+    team_row = c.fetchone()
+
+    tracked_stage = None
+    if team_row and team_row[2]:
+        # Use the tracked stage if it exists (source of truth from frontend)
+        tracked_stage = team_row[2]
+        conn.close()
+        return jsonify({
+            'success': True,
+            'stage': tracked_stage,
+            'team_id': team_id,
+            'participant_id': participant_id
+        })
+
+    # Fall back to dynamic detection if no tracked stage exists
+    main_session_started = team_row and team_row[0] is not None
+    submitted = team_row and team_row[1] == 1
+
+    # Check if comprehension was completed for this participant
+    c.execute('SELECT id FROM comprehension_attempts WHERE team_id = ? AND participant_id = ?', (team_id, participant_id))
+    comprehension_done = c.fetchone() is not None
+
+    # Check survey pages for this participant
+    c.execute('SELECT id FROM survey_page1 WHERE team_id = ? AND participant_id = ?', (team_id, participant_id))
+    survey_page1_done = c.fetchone() is not None
+
+    c.execute('SELECT id FROM strategy_descriptions WHERE team_id = ? AND participant_id = ?', (team_id, participant_id))
+    strategy_description_done = c.fetchone() is not None
+
+    c.execute('SELECT id FROM survey_page2 WHERE team_id = ? AND participant_id = ?', (team_id, participant_id))
+    survey_page2_done = c.fetchone() is not None
+
+    c.execute('SELECT id FROM survey_page3 WHERE team_id = ? AND participant_id = ?', (team_id, participant_id))
+    survey_page3_done = c.fetchone() is not None
+
+    conn.close()
+
+    # Determine current stage based on progress
+    stage = 'login'
+    if survey_page3_done:
+        stage = 'completed'
+    elif survey_page2_done:
+        stage = 'survey_page3'
+    elif strategy_description_done:
+        stage = 'survey_page2'
+    elif survey_page1_done:
+        stage = 'strategy_page'
+    elif submitted:
+        # Session submitted - waiting for partner before starting surveys
+        stage = 'wait_for_survey'
+    elif comprehension_done and main_session_started:
+        # This participant completed comprehension AND session was started
+        stage = 'main_session'
+    elif comprehension_done:
+        # Completed comprehension but session not started yet - show wait screen
+        stage = 'wait_screen'
+    else:
+        # Haven't completed comprehension yet
+        stage = 'comprehension'
+
+    return jsonify({
+        'success': True,
+        'stage': stage,
+        'team_id': team_id,
+        'participant_id': participant_id
+    })
+
+@app.route('/api/online_status/<team_id>', methods=['GET'])
+def get_online_status(team_id):
+    # Always read from database to support multiple worker processes
+    conn = sqlite3.connect('study_data.db')
+    c = conn.cursor()
+    c.execute('SELECT p1_last_heartbeat, p2_last_heartbeat FROM teams WHERE team_id = ?', (team_id,))
+    row = c.fetchone()
+    conn.close()
+
+    online = {}
+
+    if row:
+        current_time = datetime.now()
+
+        # Consider participant online if heartbeat received within last 5 seconds
+        if row[0]:  # p1_last_heartbeat
+            p1_heartbeat = datetime.fromisoformat(row[0])
+            online['1'] = (current_time - p1_heartbeat).total_seconds() < 5
+        else:
+            online['1'] = False
+
+        if row[1]:  # p2_last_heartbeat
+            p2_heartbeat = datetime.fromisoformat(row[1])
+            online['2'] = (current_time - p2_heartbeat).total_seconds() < 5
+        else:
+            online['2'] = False
+
+    return jsonify({'online': online})
+
+@app.route('/api/get_timer/<team_id>', methods=['GET'])
+def get_timer(team_id):
+    conn = sqlite3.connect('study_data.db')
+    c = conn.cursor()
+    c.execute('SELECT start_time FROM teams WHERE team_id = ?', (team_id,))
+    row = c.fetchone()
+    conn.close()
+    
+    if not row or not row[0]:
+        return jsonify({'error': 'Team not found'}), 404
+    
+    # Parse the start time and calculate time remaining
+    start_time = datetime.strptime(row[0], '%Y-%m-%d %H:%M:%S')
+    elapsed_seconds = (datetime.now() - start_time).total_seconds()
+    time_remaining = max(0, 30 * 60 - elapsed_seconds)  # 30 minutes total
+    
+    return jsonify({
+        'start_time': row[0],
+        'time_remaining': int(time_remaining)
+    })
+
+@app.route('/api/export/<team_id>', methods=['GET'])
+def export_team_data(team_id):
+    conn = sqlite3.connect('study_data.db')
+    c = conn.cursor()
+    
+    # Get all data for the team
+    c.execute('SELECT * FROM teams WHERE team_id = ?', (team_id,))
+    team_data = c.fetchone()
+    
+    c.execute('SELECT * FROM messages WHERE team_id = ? ORDER BY timestamp', (team_id,))
+    messages = c.fetchall()
+    
+    c.execute('SELECT * FROM ideas WHERE team_id = ? ORDER BY timestamp', (team_id,))
+    ideas = c.fetchall()
+    
+    conn.close()
+    
+    # Create CSV in memory
+    output = io.StringIO()
+    writer = csv.writer(output)
+    
+    # Write team info
+    writer.writerow(['TEAM INFORMATION'])
+    writer.writerow(['Team ID', 'Start Time', 'Final Idea', 'Submitted', 'Submit Time'])
+    if team_data:
+        writer.writerow(team_data[1:])
+    writer.writerow([])
+    
+    # Write messages
+    writer.writerow(['MESSAGES'])
+    writer.writerow(['ID', 'Team ID', 'Participant ID', 'Role', 'Content', 'Timestamp', 'Tokens Used'])
+    for msg in messages:
+        writer.writerow(msg)
+    writer.writerow([])
+    
+    # Write ideas
+    writer.writerow(['IDEAS'])
+    writer.writerow(['ID', 'Team ID', 'Participant ID', 'Idea Text', 'Timestamp'])
+    for idea in ideas:
+        writer.writerow(idea)
+    
+    output.seek(0)
+    return send_file(
+        io.BytesIO(output.getvalue().encode('utf-8')),
+        mimetype='text/csv',
+        as_attachment=True,
+        download_name=f'team_{team_id}_data.csv'
+    )
+
+@app.route('/api/survey_page1', methods=['POST'])
+def save_survey_page1():
+    data = request.json
+    team_id = data.get('team_id')
+    participant_id = data.get('participant_id')
+    
+    if not team_id or not participant_id:
+        return jsonify({'error': 'Team ID and Participant ID required'}), 400
+    
+    # Validate participant_id to prevent SQL injection
+    if participant_id not in ['1', '2']:
+        return jsonify({'error': 'Invalid participant_id'}), 400
+    
+    # Validate all responses are from allowed values
+    allowed_responses = ['Strongly Disagree', 'Disagree', 'Neither Disagree nor Agree', 'Agree', 'Strongly Agree']
+    for i in range(1, 11):
+        q_key = f'q{i}'
+        if data.get(q_key) not in allowed_responses:
+            return jsonify({'error': f'Invalid response for {q_key}'}), 400
+    
+    conn = sqlite3.connect('study_data.db')
+    c = conn.cursor()
+    c.execute('''
+        INSERT INTO survey_page1 (team_id, participant_id, q1, q2, q3, q4, q5, q6, q7, q8, q9, q10)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (team_id, participant_id, data.get('q1'), data.get('q2'), data.get('q3'), data.get('q4'),
+          data.get('q5'), data.get('q6'), data.get('q7'), data.get('q8'), data.get('q9'), data.get('q10')))
+    conn.commit()
+    conn.close()
+    
+    return jsonify({'success': True})
+
+@app.route('/api/survey_page2', methods=['POST'])
+def save_survey_page2():
+    data = request.json
+    team_id = data.get('team_id')
+    participant_id = data.get('participant_id')
+    employment_status = data.get('employment_status')
+    major_field = data.get('major_field')
+    major_other = data.get('major_other', '')
+    age = data.get('age')
+    gender = data.get('gender')
+    
+    if not all([team_id, participant_id, employment_status, major_field, age, gender]):
+        return jsonify({'error': 'Missing required fields'}), 400
+    
+    # Validate participant_id
+    if participant_id not in ['1', '2']:
+        return jsonify({'error': 'Invalid participant_id'}), 400
+    
+    # Validate employment_status
+    if employment_status not in ['Undergraduate student', 'Graduate student']:
+        return jsonify({'error': 'Invalid employment status'}), 400
+
+    # Validate major_field
+    valid_major_fields = ['STEM', 'Business and Economics', 'Social Sciences',
+                          'Arts and Humanities', 'Health and Medical Sciences',
+                          'Education', 'Law', 'Other']
+    if major_field not in valid_major_fields:
+        return jsonify({'error': 'Invalid major field'}), 400
+
+    # Validate age is integer
+    try:
+        age_int = int(age)
+        if age_int < 18 or age_int > 100:
+            return jsonify({'error': 'Age must be between 18 and 100'}), 400
+    except (ValueError, TypeError):
+        return jsonify({'error': 'Invalid age'}), 400
+    
+    # Validate gender
+    valid_genders = ['Female', 'Male', 'Transgender Female', 'Transgender Male', 
+                     'Gender Variant / Non-Conforming', 'Other', 'Prefer not to answer']
+    if gender not in valid_genders:
+        return jsonify({'error': 'Invalid gender'}), 400
+    
+    conn = sqlite3.connect('study_data.db')
+    c = conn.cursor()
+    c.execute('''
+        INSERT INTO survey_page2 (team_id, participant_id, employment_status, major_field, major_other, age, gender)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    ''', (team_id, participant_id, employment_status, major_field, major_other, age_int, gender))
+    conn.commit()
+    conn.close()
+    
+    return jsonify({'success': True})
+
+@app.route('/api/survey_page3', methods=['POST'])
+def save_survey_page3():
+    data = request.json
+    team_id = data.get('team_id')
+    participant_id = data.get('participant_id')
+    first_last_name = data.get('first_last_name', '').strip()
+    address_line1 = data.get('address_line1', '').strip()
+    address_line2 = data.get('address_line2', '').strip()
+    city = data.get('city', '').strip()
+    state = data.get('state', '').strip()
+    postal_code = data.get('postal_code', '').strip()
+    
+    if not all([team_id, participant_id, first_last_name, address_line1, city, state, postal_code]):
+        return jsonify({'error': 'Missing required fields'}), 400
+    
+    # Validate participant_id
+    if participant_id not in ['1', '2']:
+        return jsonify({'error': 'Invalid participant_id'}), 400
+    
+    # Validate state is 2 letters
+    if len(state) != 2 or not state.isalpha():
+        return jsonify({'error': 'State must be 2 letters'}), 400
+    
+    # Validate postal code is exactly 5 digits
+    if len(postal_code) != 5 or not postal_code.isdigit():
+        return jsonify({'error': 'Postal code must be exactly 5 digits'}), 400
+    
+    conn = sqlite3.connect('study_data.db')
+    c = conn.cursor()
+    c.execute('''
+        INSERT INTO survey_page3 (team_id, participant_id, first_last_name, address_line1, address_line2, city, state, postal_code)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (team_id, participant_id, first_last_name, address_line1, address_line2, city, state, postal_code))
+    conn.commit()
+    conn.close()
+    
+    return jsonify({'success': True})
+
+@app.route('/api/strategy_description', methods=['POST'])
+def save_strategy_description():
+    data = request.json
+    team_id = data.get('team_id')
+    participant_id = data.get('participant_id')
+    strategy_description = data.get('strategy_description', '').strip()
+
+    if not all([team_id, participant_id, strategy_description]):
+        return jsonify({'error': 'Missing required fields'}), 400
+
+    # Validate participant_id
+    if participant_id not in ['1', '2']:
+        return jsonify({'error': 'Invalid participant_id'}), 400
+
+    conn = sqlite3.connect('study_data.db')
+    c = conn.cursor()
+    c.execute('''
+        INSERT INTO strategy_descriptions (team_id, participant_id, strategy_description)
+        VALUES (?, ?, ?)
+    ''', (team_id, participant_id, strategy_description))
+    conn.commit()
+    conn.close()
+
+    return jsonify({'success': True})
+
+if __name__ == '__main__':
+    app.run(debug=True)
