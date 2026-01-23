@@ -396,6 +396,9 @@ HTML_TEMPLATE = r'''
             color: #6b7280;
             font-weight: normal;
             margin-left: 8px;
+            vertical-align: top;
+            display: inline-block;
+            line-height: 1.3;
         }
 
         .right-panel {
