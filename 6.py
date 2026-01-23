@@ -395,10 +395,8 @@ HTML_TEMPLATE = r'''
             font-size: 10px;
             color: #6b7280;
             font-weight: normal;
-            margin-left: 8px;
-            vertical-align: top;
-            display: inline-block;
-            line-height: 1.3;
+            line-height: 1.4;
+            padding-top: 4px;
         }
 
         .right-panel {
@@ -595,6 +593,10 @@ HTML_TEMPLATE = r'''
             color: #333;
             margin-bottom: 15px;
             flex-shrink: 0;
+            display: flex;
+            flex-wrap: wrap;
+            align-items: flex-start;
+            gap: 8px;
         }
 
         .ideas-list {
@@ -1343,7 +1345,7 @@ HTML_TEMPLATE = r'''
             </div>
 
             <div class="final-section">
-                <div class="ideas-header">Final Idea <span id="modeLabel" style="color: #10b981; font-weight: 600;">(Editing Mode)</span> <span class="sync-info">Syncing the Final Idea text between team members may take a few seconds. Please wait while it updates. You may click outside the text area if it is taking too long.</span></div>
+                <div class="ideas-header"><span>Final Idea <span id="modeLabel" style="color: #10b981; font-weight: 600;">(Editing Mode)</span></span> <span class="sync-info">Syncing the Final Idea text between team members may take a few seconds. Please wait while it updates. You may click outside the text area if it is taking too long.</span></div>
                 
                 <div class="final-input-group">
                     <label class="final-input-label">
