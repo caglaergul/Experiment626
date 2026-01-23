@@ -1287,7 +1287,7 @@ HTML_TEMPLATE = r'''
                 <button class="instructions-button" onclick="showInstructions()">Instructions</button>
             </div>
             <div class="chat-header">
-                <h2>ChatGPT Assistant</h2>
+                <h2>ChatGPT Assistant <span style="color: #FFD54F; font-size: 16px;">(using ChatGPT is highly encouraged)</span></h2>
             </div>
 
             <div class="messages" id="messages"></div>
