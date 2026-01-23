@@ -1247,7 +1247,7 @@ HTML_TEMPLATE = r'''
             </div>
 
             <div class="comprehension-question">
-                <label>6. During the brainstorming task, using Generative AI (through "ChatGPT Assistant" section of the interface) is highly encouraged.</label>
+                <label>6. During the brainstorming task, using external Generative AI tools (e.g., ChatGPT, Copilot) is NOT allowed.</label>
                 <div class="radio-group">
                     <div class="radio-option">
                         <input type="radio" id="q6_true" name="q6" value="True">
@@ -1311,55 +1311,37 @@ HTML_TEMPLATE = r'''
                 <div class="timer-display" id="timerDisplay">30:00</div>
                 <button class="instructions-button" onclick="showInstructions()">Instructions</button>
             </div>
-            <div class="chat-header">
-                <h2>ChatGPT Assistant <span style="color: #FFD54F; font-size: 16px;">(using ChatGPT is highly encouraged)</span></h2>
-            </div>
-
-            <div class="messages" id="messages"></div>
-
-            <div class="typing-indicator" id="typingIndicator">
-                <span></span>
-                <span></span>
-                <span></span>
-            </div>
-
-            <div class="input-area">
-                <input type="text" id="messageInput" placeholder="Ask ChatGPT..." 
-                       onkeypress="if(event.key==='Enter') sendMessage()">
-                <button class="send-btn" onclick="sendMessage()">Send</button>
+            <div class="ideas-section">
+                <div class="ideas-header">Possible Ideas</div>
+                <div class="ideas-list" id="ideasList"></div>
+                <input type="text" id="ideaInput" class="idea-input"
+                       placeholder="Add a new idea..." onkeypress="if(event.key==='Enter') addIdea()">
+                <button class="add-idea-btn" onclick="addIdea()">+ Add Idea</button>
             </div>
         </div>
 
         <div class="right-panel">
-            <div class="ideas-section">
-                <div class="ideas-header">Possible Ideas</div>
-                <div class="ideas-list" id="ideasList"></div>
-                <input type="text" id="ideaInput" class="idea-input" 
-                       placeholder="Add a new idea..." onkeypress="if(event.key==='Enter') addIdea()">
-                <button class="add-idea-btn" onclick="addIdea()">+ Add Idea</button>
-            </div>
-
             <div class="final-section">
                 <div class="ideas-header">Final Idea</div>
-                
+
                 <div class="final-input-group">
                     <label class="final-input-label">
-                        Title 
+                        Title
                         <span class="word-counter" id="titleCounter">0/5 words</span>
                     </label>
-                    <input type="text" id="finalTitle" class="final-title-input" 
+                    <input type="text" id="finalTitle" class="final-title-input"
                            placeholder="Enter title (max 5 words)">
                 </div>
-                
+
                 <div class="final-input-group">
                     <label class="final-input-label">
                         Description
                         <span class="word-counter" id="descCounter">0/80 words</span>
                     </label>
-                    <textarea id="finalDescription" class="final-description-textarea" 
+                    <textarea id="finalDescription" class="final-description-textarea"
                               placeholder="Enter description (max 80 words)"></textarea>
                 </div>
-                
+
                 <button class="submit-btn" id="submitBtn" onclick="submitFinal()">Submit Final Idea</button>
             </div>
         </div>
@@ -1619,7 +1601,6 @@ HTML_TEMPLATE = r'''
     <script>
         let teamId = '';
         let participantId = '';
-        let lastMessageId = 0;
         let lastIdeaId = 0;
         let pollInterval;
         let timerInterval;
@@ -1655,7 +1636,7 @@ HTML_TEMPLATE = r'''
             q3: 'Evaluations will be made based on the final idea you submit to the system.',
             q4: 'You will be evaluated based on the idea you submit, so you should make sure you are submitting the version of your idea you feel comfortable with.',
             q5: 'You cannot edit your final idea after you submit it.',
-            q6: 'You are highly encouraged to use Generative AI for this brainstorming task.',
+            q6: 'You are NOT allowed to use external Generative AI tools for this brainstorming task.',
             q7: 'The final score is calculated as 40% × Originality Score + 60% × Quality Score.'
         };
 
@@ -1849,7 +1830,6 @@ HTML_TEMPLATE = r'''
                 }, 3000);
 
                 pollInterval = setInterval(() => {
-                    loadMessages();
                     loadIdeas();
                     loadFinalIdea();
                 }, 2000);
@@ -2009,133 +1989,6 @@ HTML_TEMPLATE = r'''
                     document.getElementById('comprehensionScreen').classList.add('active');
                     trackPage('comprehension');
                 });
-        }
-
-        function loadMessages() {
-            fetch(API_BASE + `/api/messages/${teamId}?since=${lastMessageId}`)
-                .then(response => response.json())
-                .then(data => {
-                    if (data.messages && data.messages.length > 0) {
-                        data.messages.forEach(msg => {
-                            addMessageToUI(msg.role, msg.content, msg.participant_id, msg.id);
-                            lastMessageId = Math.max(lastMessageId, msg.id);
-                        });
-                    }
-                });
-        }
-
-        function sendMessage() {
-            const input = document.getElementById('messageInput');
-            const message = input.value.trim();
-            if (!message) return;
-
-            input.value = '';
-            document.getElementById('typingIndicator').classList.add('active');
-            
-            fetch(API_BASE + '/api/chat', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({team_id: teamId, participant_id: participantId, message: message})
-            })
-            .finally(() => {
-                document.getElementById('typingIndicator').classList.remove('active');
-            });
-        }
-
-        function addMessageToUI(role, content, participant, messageId) {
-            if (document.getElementById(`msg-${messageId}`)) return;
-            
-            const messagesDiv = document.getElementById('messages');
-            const messageDiv = document.createElement('div');
-            messageDiv.id = `msg-${messageId}`;
-            messageDiv.className = `message ${role}`;
-            
-            const logo = role === 'assistant' ? 
-                '<img src="https://cdn.oaistatic.com/_next/static/media/apple-touch-icon.59f2e898.png">' : '👤';
-            
-            const label = role === 'user' && participant ? `Participant ${participant}` : '';
-            const time = new Date().toLocaleTimeString('en-US', { 
-                hour: 'numeric', 
-                minute: '2-digit',
-                hour12: true 
-            });
-            
-            const formattedContent = role === 'assistant' ? formatMarkdown(content) : escapeHtml(content);
-            
-            messageDiv.innerHTML = `
-                <div class="message-avatar">${logo}</div>
-                <div>
-                    <div class="message-content">${formattedContent}</div>
-                    <div class="message-meta">${label} ${time}</div>
-                </div>
-            `;
-            
-            messagesDiv.appendChild(messageDiv);
-            messagesDiv.scrollTop = messagesDiv.scrollHeight;
-        }
-
-        function formatMarkdown(text) {
-            // First, ensure proper line breaks around numbered lists
-            // Handle pattern: "text: 1. item" -> "text:\n1. item"
-            text = text.replace(/:\s*(\d+\.)/g, ':\n$1');
-            
-            // Handle pattern: "text 1. item" where 1. starts a list after a sentence
-            text = text.replace(/([.!?])\s+(\d+\.\s+\*\*)/g, '$1\n\n$2');
-            
-            let html = text;
-            
-            // Bold text
-            html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-            
-            // Process line by line
-            const lines = html.split('\n');
-            let result = '';
-            let inList = false;
-            let listType = null;
-            
-            for (let i = 0; i < lines.length; i++) {
-                const line = lines[i].trim();
-                if (!line) continue;
-                
-                // Check for numbered list item
-                if (/^\d+\.\s+/.test(line)) {
-                    // Start new list if not in one
-                    if (!inList) {
-                        result += '<br><ol style="margin: 12px 0; padding-left: 28px;">';
-                        inList = true;
-                        listType = 'ol';
-                    }
-                    const content = line.replace(/^\d+\.\s+/, '');
-                    result += `<li style="margin: 8px 0; line-height: 1.6;">${content}</li>`;
-                }
-                // Check for bullet list item  
-                else if (/^[-*]\s+/.test(line)) {
-                    if (!inList) {
-                        result += '<br><ul style="margin: 12px 0; padding-left: 28px;">';
-                        inList = true;
-                        listType = 'ul';
-                    }
-                    const content = line.replace(/^[-*]\s+/, '');
-                    result += `<li style="margin: 8px 0; line-height: 1.6;">${content}</li>`;
-                }
-                // Regular text
-                else {
-                    // Close list if we were in one
-                    if (inList) {
-                        result += `</${listType}><br>`;
-                        inList = false;
-                        listType = null;
-                    }
-                    result += `<p style="margin: 10px 0;">${line}</p>`;
-                }
-            }
-            
-            // Close any open list
-            if (inList) {
-                result += `</${listType}>`;
-            }
-            
-            return result;
         }
 
         function loadIdeas() {
