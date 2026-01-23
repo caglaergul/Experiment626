@@ -586,6 +586,13 @@ HTML_TEMPLATE = r'''
             flex-shrink: 0;
         }
 
+        .sync-info {
+            font-size: 10px;
+            color: #6b7280;
+            margin-bottom: 10px;
+            line-height: 1.3;
+        }
+
         .ideas-list {
             flex: 1;
             overflow-y: auto;
@@ -1314,6 +1321,7 @@ HTML_TEMPLATE = r'''
         <div class="right-panel">
             <div class="final-section">
                 <div class="ideas-header">Final Idea <span id="modeLabel" style="color: #10b981; font-weight: 600;">(Editing Mode)</span></div>
+                <div class="sync-info">Syncing the Final Idea text between team members may take a few seconds. Please wait while it updates. You may click outside the text area if it is taking too long.</div>
 
                 <div class="final-input-group">
                     <label class="final-input-label">
