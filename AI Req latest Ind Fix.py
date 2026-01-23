@@ -1815,7 +1815,6 @@ HTML_TEMPLATE = r'''
             })
             .then(response => response.json())
             .then(data => {
-                loadMessages();
                 loadIdeas();
                 loadFinalIdea();
                 loadTypingMetrics();  // Load existing typing metrics to preserve keystroke counts
